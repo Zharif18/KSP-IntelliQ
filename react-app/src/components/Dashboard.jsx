@@ -1,12 +1,18 @@
 import { useState, useEffect, useRef } from "react";
 import {
-  LayoutDashboard, Map, FileText, Users, BarChart3, MessageSquare,
-  ShieldAlert, TrendingUp, Clock, Radio, Search, Bell, Send, X, ChevronRight
+  Shield, FileText, Users, Map, BarChart3, MessageSquare,
+  Search, Bell, Send, Radio, ChevronLeft, Sun, Moon
 } from "lucide-react";
 import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid
 } from "recharts";
 
+/* ---------------------------------------------------------------------
+   CATALYST INTEGRATION LAYER
+   Calls your deployed Catalyst Functions (e.g. /server/ksp_backend/...).
+   Falls back to demo data so the UI always renders. Flip USE_MOCK to
+   false once your functions are live.
+------------------------------------------------------------------------ */
 const USE_MOCK = true;
 
 async function callCatalystFunction(endpoint, fallback) {
@@ -21,7 +27,7 @@ async function callCatalystFunction(endpoint, fallback) {
   }
 }
 
-const MOCK_OFFICER = { name: "Inspector R. Naik", role: "Inspector", station: "Whitefield PS" };
+const MOCK_OFFICER = { name: "Insp. R. Naik", role: "Inspector", station: "Whitefield PS", badge: "KA-4471" };
 const MOCK_STATS = { totalCrimes: 1284, openFirs: 96, solved: 812, activeInvestigations: 41 };
 const MOCK_TREND = [
   { day: "Mon", crimes: 32 }, { day: "Tue", crimes: 41 }, { day: "Wed", crimes: 28 },
@@ -33,20 +39,20 @@ const MOCK_HOTSPOTS = [
   { area: "Electronic City", risk: 52, type: "Burglary" },
   { area: "Yeshwanthpur", risk: 45, type: "Assault" },
 ];
-const MOCK_ALERTS = [
-  "FIR #1456 escalated to Priority 1 — Whitefield",
-  "Pattern match: 3 burglaries linked, same MO — Indiranagar",
-  "Patrol unit 12 dispatched — Electronic City",
-  "New evidence uploaded to FIR #1402",
-  "Hotspot forecast refreshed — 6 zones updated",
+const MOCK_LOG = [
+  { time: "14:32", text: "FIR #1456 escalated to Priority 1 — Whitefield" },
+  { time: "13:58", text: "Pattern match: 3 burglaries linked, same MO — Indiranagar" },
+  { time: "13:41", text: "Patrol unit 12 dispatched — Electronic City" },
+  { time: "12:20", text: "New evidence uploaded to FIR #1402" },
+  { time: "11:05", text: "Hotspot forecast refreshed — 6 zones updated" },
 ];
 
-const NAV_ITEMS = [
-  { icon: LayoutDashboard, label: "Dashboard", active: true },
+const TABS = [
+  { icon: BarChart3, label: "Dashboard", active: true },
   { icon: Map, label: "Crime Map" },
   { icon: FileText, label: "Cases" },
   { icon: Users, label: "Officers" },
-  { icon: BarChart3, label: "Reports" },
+  { icon: Search, label: "Reports" },
 ];
 
 function useLiveClock() {
@@ -58,32 +64,34 @@ function useLiveClock() {
   return time;
 }
 
-function HudFrame({ children, className = "" }) {
+function CaseCard({ children, className = "", stamp }) {
   return (
-    <div className={`hud-card ${className}`}>
-      <span className="hud-corner tl" /><span className="hud-corner tr" />
-      <span className="hud-corner bl" /><span className="hud-corner br" />
+    <div className={`case-card ${className}`}>
+      {stamp && <span className="stamp">{stamp}</span>}
       {children}
     </div>
   );
 }
 
-function StatCard({ label, value, accent, icon: Icon }) {
+function StatCard({ label, value, tone, icon: Icon }) {
   return (
-    <HudFrame className="stat-card">
-      <div className="stat-icon" style={{ color: accent }}><Icon size={18} /></div>
-      <div className="stat-value" style={{ color: accent }}>{value}</div>
+    <CaseCard className={`stat-card tone-${tone}`}>
+      <div className="stat-top">
+        <div className="stat-icon"><Icon size={15} /></div>
+      </div>
+      <div className="stat-value display">{value}</div>
       <div className="stat-label">{label}</div>
-    </HudFrame>
+    </CaseCard>
   );
 }
 
 export default function KSPIntelliQDashboard() {
+  const [theme, setTheme] = useState("dark");
   const [officer, setOfficer] = useState(null);
   const [stats, setStats] = useState(null);
   const [assistantOpen, setAssistantOpen] = useState(false);
   const [messages, setMessages] = useState([
-    { from: "ai", text: "IntelliQ Assistant online. Ask about FIRs, hotspots, or officer records." },
+    { from: "ai", text: "IntelliQ Assistant ready. Ask about a FIR, area, or suspect." },
   ]);
   const [input, setInput] = useState("");
   const clock = useLiveClock();
@@ -94,261 +102,299 @@ export default function KSPIntelliQDashboard() {
     callCatalystFunction("get_dashboard_stats", MOCK_STATS).then(setStats);
   }, []);
 
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
+  }, [messages]);
+
   const sendMessage = () => {
     if (!input.trim()) return;
     const q = input.trim();
     setMessages((m) => [...m, { from: "user", text: q }]);
     setInput("");
     setTimeout(() => {
-      setMessages((m) => [...m, { from: "ai", text: `Searching records for: "${q}"… (connect Gemini via Catalyst Function to answer live)` }]);
+      setMessages((m) => [...m, { from: "ai", text: `Searching case files for: "${q}"… (wire this to Gemini via a Catalyst Function to answer live)` }]);
     }, 500);
   };
 
   return (
-    <div className="ksp-dash">
+    <div className={`ksp-dash theme-${theme}`}>
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 
         .ksp-dash {
-          --bg-void: #090d13;
-          --bg-panel: #10161f;
-          --bg-raised: #161e2b;
-          --accent-amber: #f2a93b;
-          --accent-cyan: #2dd4c8;
-          --accent-red: #e4483d;
-          --text-primary: #e8ecf1;
-          --text-muted: #6b7686;
-          --border-line: #232c3a;
           font-family: 'Inter', sans-serif;
-          background: var(--bg-void);
-          background-image:
-            radial-gradient(circle at 15% 10%, rgba(45,212,200,0.05), transparent 40%),
-            radial-gradient(circle at 85% 90%, rgba(242,169,59,0.05), transparent 40%);
-          color: var(--text-primary);
           min-height: 100vh;
           display: flex;
           flex-direction: column;
+          -webkit-font-smoothing: antialiased;
+          transition: background 0.2s, color 0.2s;
         }
+        .theme-dark {
+          --ink: #0e1116;
+          --panel: #171b23;
+          --panel-raised: #212630;
+          --gold: #d4b073;
+          --gold-strong: #e8c98d;
+          --wine: #c17a7a;
+          --sage: #7fb39c;
+          --text: #f3f1ea;
+          --muted: #a8adba;
+          --border: rgba(255,255,255,0.1);
+          background: var(--ink);
+          background-image: radial-gradient(circle at 85% 0%, rgba(212,176,115,0.07), transparent 50%);
+          color: var(--text);
+        }
+        .theme-light {
+          --ink: #f3efe6;
+          --panel: #ffffff;
+          --panel-raised: #f4f0e6;
+          --gold: #93692e;
+          --gold-strong: #7a5624;
+          --wine: #973f3f;
+          --sage: #2f6d52;
+          --text: #201d17;
+          --muted: #5c5749;
+          --border: rgba(32,29,23,0.12);
+          background: var(--ink);
+          background-image: radial-gradient(circle at 85% 0%, rgba(147,105,46,0.05), transparent 50%);
+          color: var(--text);
+        }
+
         .mono { font-family: 'JetBrains Mono', monospace; }
-        .display { font-family: 'Rajdhani', sans-serif; font-weight: 700; letter-spacing: 0.03em; }
+        .display { font-family: 'Playfair Display', serif; }
 
-        /* Status bar */
-        .status-bar {
-          display: flex; align-items: center; justify-content: space-between;
-          padding: 10px 20px; background: var(--bg-panel);
-          border-bottom: 1px solid var(--border-line);
-        }
-        .brand { display: flex; align-items: center; gap: 10px; }
-        .brand-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent-cyan);
-          box-shadow: 0 0 8px var(--accent-cyan); animation: pulse 2s infinite; }
-        @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
-        .brand-title { font-size: 18px; }
-        .brand-sub { color: var(--text-muted); font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; }
-        .status-right { display: flex; align-items: center; gap: 20px; }
-        .clock { font-size: 13px; color: var(--accent-cyan); }
-        .officer-chip { display: flex; align-items: center; gap: 8px; padding: 6px 12px;
-          background: var(--bg-raised); border: 1px solid var(--border-line); border-radius: 4px; font-size: 12px; }
-        .officer-role { color: var(--accent-amber); font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; }
+        /* Header */
+        .top-bar { display: flex; align-items: center; justify-content: space-between;
+          padding: 18px 28px; background: linear-gradient(180deg, var(--panel), var(--ink));
+          border-bottom: 1px solid var(--border); }
+        .brand { display: flex; align-items: center; gap: 13px; }
+        .seal { width: 36px; height: 36px; flex-shrink: 0; }
+        .brand-title { font-size: 19px; font-weight: 700; letter-spacing: 0.01em; color: var(--text); }
+        .brand-sub { color: var(--muted); font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; margin-top: 2px; font-weight: 500; }
+        .top-right { display: flex; align-items: center; gap: 16px; }
+        .clock { font-size: 12px; color: var(--gold-strong); font-weight: 500; }
+        .icon-btn { width: 34px; height: 34px; border-radius: 8px; background: var(--panel-raised);
+          border: 1px solid var(--border); display: flex; align-items: center; justify-content: center;
+          color: var(--text); cursor: pointer; }
+        .id-badge { display: flex; align-items: center; gap: 10px; padding: 6px 14px 6px 6px;
+          background: var(--panel-raised); border: 1px solid var(--border); border-radius: 8px; }
+        .id-photo { width: 26px; height: 26px; border-radius: 6px; background: var(--gold);
+          display: flex; align-items: center; justify-content: center; color: var(--ink); }
+        .id-name { font-size: 12px; font-weight: 600; color: var(--text); }
+        .id-role { font-size: 9.5px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; font-weight: 500; }
+        .id-badge-no { font-size: 9.5px; color: var(--gold-strong); font-weight: 500; }
 
-        /* Body layout */
-        .body-wrap { display: flex; flex: 1; }
-        .nav-rail { width: 68px; background: var(--bg-panel); border-right: 1px solid var(--border-line);
-          display: flex; flex-direction: column; align-items: center; padding: 20px 0; gap: 6px; }
-        .nav-item { width: 44px; height: 44px; display: flex; align-items: center; justify-content: center;
-          border-radius: 6px; color: var(--text-muted); cursor: pointer; transition: all 0.15s; }
-        .nav-item:hover { color: var(--accent-cyan); background: var(--bg-raised); }
-        .nav-item.active { color: var(--accent-cyan); background: var(--bg-raised);
-          box-shadow: inset 2px 0 0 var(--accent-cyan); }
+        /* Folder tabs */
+        .tab-row { display: flex; gap: 2px; padding: 0 28px; background: var(--ink); }
+        .tab { display: flex; align-items: center; gap: 7px; padding: 12px 16px; font-size: 12.5px;
+          color: var(--muted); cursor: pointer; border-bottom: 2px solid transparent; transition: color 0.15s; font-weight: 500; }
+        .tab.active { color: var(--gold-strong); border-bottom-color: var(--gold-strong); }
+        .tab:hover:not(.active) { color: var(--text); }
 
-        .main { flex: 1; padding: 24px; overflow-y: auto; }
-        .section-title { font-size: 12px; text-transform: uppercase; letter-spacing: 0.12em;
-          color: var(--text-muted); margin-bottom: 12px; }
+        .main { flex: 1; padding: 28px; }
+        .section-title { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.12em;
+          color: var(--muted); margin-bottom: 14px; font-weight: 700; }
 
-        /* HUD card frame — signature element */
-        .hud-card { position: relative; background: var(--bg-panel); border: 1px solid var(--border-line);
-          border-radius: 4px; padding: 18px; }
-        .hud-corner { position: absolute; width: 10px; height: 10px; opacity: 0.7; }
-        .hud-corner.tl { top: -1px; left: -1px; border-top: 2px solid var(--accent-cyan); border-left: 2px solid var(--accent-cyan); }
-        .hud-corner.tr { top: -1px; right: -1px; border-top: 2px solid var(--accent-cyan); border-right: 2px solid var(--accent-cyan); }
-        .hud-corner.bl { bottom: -1px; left: -1px; border-bottom: 2px solid var(--accent-cyan); border-left: 2px solid var(--accent-cyan); }
-        .hud-corner.br { bottom: -1px; right: -1px; border-bottom: 2px solid var(--accent-cyan); border-right: 2px solid var(--accent-cyan); }
+        .case-card { position: relative; background: var(--panel); border: 1px solid var(--border);
+          border-radius: 12px; padding: 20px; box-shadow: 0 1px 2px rgba(0,0,0,0.15), 0 8px 24px rgba(0,0,0,0.12); }
+        .stamp { position: absolute; top: 16px; right: 18px;
+          background: rgba(212,176,115,0.12); border: 1px solid var(--gold); color: var(--gold-strong);
+          font-size: 9px; letter-spacing: 0.1em; padding: 3px 10px; text-transform: uppercase; font-weight: 700;
+          border-radius: 20px; }
 
         .kpi-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 20px; }
-        .stat-card { display: flex; flex-direction: column; gap: 6px; }
-        .stat-icon { margin-bottom: 4px; }
-        .stat-value { font-family: 'Rajdhani', sans-serif; font-weight: 700; font-size: 30px; line-height: 1; }
-        .stat-label { color: var(--text-muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; }
+        .stat-card { padding: 18px 20px; }
+        .stat-top { margin-bottom: 12px; }
+        .stat-icon { width: 32px; height: 32px; border-radius: 8px; display: flex; align-items: center;
+          justify-content: center; background: rgba(212,176,115,0.14); color: var(--gold-strong); }
+        .tone-wine .stat-icon { background: rgba(193,122,122,0.14); color: var(--wine); }
+        .tone-sage .stat-icon { background: rgba(127,179,156,0.14); color: var(--sage); }
+        .stat-value { font-size: 29px; font-weight: 700; line-height: 1; margin-bottom: 6px; color: var(--text); }
+        .stat-label { color: var(--muted); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; }
 
-        .grid-2 { display: grid; grid-template-columns: 1.4fr 1fr; gap: 16px; margin-bottom: 20px; }
+        .grid-2 { display: grid; grid-template-columns: 1.3fr 1fr; gap: 16px; margin-bottom: 20px; }
 
-        /* Radar sweep — signature motion element */
-        .radar-box { position: relative; height: 220px; border-radius: 4px; overflow: hidden;
-          background: radial-gradient(circle, rgba(45,212,200,0.08) 0%, transparent 70%), var(--bg-raised);
-          border: 1px solid var(--border-line); display: flex; align-items: center; justify-content: center; }
-        .radar-ring { position: absolute; border: 1px solid rgba(45,212,200,0.25); border-radius: 50%; }
-        .radar-sweep { position: absolute; width: 50%; height: 2px; left: 50%; top: 50%; transform-origin: left center;
-          background: linear-gradient(90deg, var(--accent-cyan), transparent); animation: sweep 4s linear infinite; }
-        @keyframes sweep { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-        .radar-dot { position: absolute; width: 6px; height: 6px; border-radius: 50%; background: var(--accent-amber);
-          box-shadow: 0 0 6px var(--accent-amber); }
-        .radar-label { position: absolute; bottom: 10px; left: 12px; font-size: 11px; color: var(--text-muted); }
-
-        .ticker-panel { display: flex; flex-direction: column; }
-        .ticker-header { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; color: var(--accent-amber); font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; }
-        .ticker-list { display: flex; flex-direction: column; gap: 10px; overflow: hidden; max-height: 180px; }
-        .ticker-item { font-size: 12.5px; color: var(--text-primary); border-left: 2px solid var(--accent-cyan); padding-left: 10px; opacity: 0.9; }
-
-        .hotspot-row { display: flex; align-items: center; justify-content: space-between; padding: 8px 0;
-          border-bottom: 1px solid var(--border-line); font-size: 13px; }
+        .forecast-body { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+        .hotspot-row { display: flex; align-items: center; justify-content: space-between; padding: 10px 0;
+          border-bottom: 1px solid var(--border); font-size: 13px; color: var(--text); font-weight: 500; }
         .hotspot-row:last-child { border-bottom: none; }
-        .risk-bar-track { width: 80px; height: 5px; background: var(--bg-raised); border-radius: 3px; overflow: hidden; }
-        .risk-bar-fill { height: 100%; background: linear-gradient(90deg, var(--accent-cyan), var(--accent-amber)); }
+        .risk-track { width: 90px; height: 5px; background: var(--panel-raised); border-radius: 4px; overflow: hidden; }
+        .risk-fill { height: 100%; background: linear-gradient(90deg, var(--gold), var(--wine)); border-radius: 4px; }
 
-        /* AI assistant dock */
-        .ai-fab { position: fixed; bottom: 24px; right: 24px; width: 56px; height: 56px; border-radius: 50%;
-          background: var(--accent-amber); color: #10161f; display: flex; align-items: center; justify-content: center;
-          cursor: pointer; box-shadow: 0 4px 20px rgba(242,169,59,0.4); border: none; z-index: 50; }
-        .ai-panel { position: fixed; bottom: 24px; right: 24px; width: 340px; height: 440px; background: var(--bg-panel);
-          border: 1px solid var(--border-line); border-radius: 8px; display: flex; flex-direction: column; z-index: 50;
-          box-shadow: 0 10px 40px rgba(0,0,0,0.5); }
-        .ai-header { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px;
-          border-bottom: 1px solid var(--border-line); }
-        .ai-title { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--accent-cyan); }
-        .ai-close { color: var(--text-muted); cursor: pointer; }
-        .ai-messages { flex: 1; overflow-y: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
-        .msg { font-size: 12.5px; max-width: 85%; padding: 8px 10px; border-radius: 6px; line-height: 1.4; }
-        .msg.ai { background: var(--bg-raised); align-self: flex-start; color: var(--text-primary); }
-        .msg.user { background: rgba(45,212,200,0.15); align-self: flex-end; color: var(--text-primary); }
-        .ai-input-row { display: flex; gap: 6px; padding: 10px; border-top: 1px solid var(--border-line); }
-        .ai-input { flex: 1; background: var(--bg-raised); border: 1px solid var(--border-line); border-radius: 4px;
-          padding: 8px 10px; font-size: 12.5px; color: var(--text-primary); outline: none; }
-        .ai-send { background: var(--accent-amber); border: none; border-radius: 4px; width: 34px; display: flex;
-          align-items: center; justify-content: center; color: #10161f; cursor: pointer; }
+        .log-list { display: flex; flex-direction: column; margin-top: 6px; }
+        .log-row { display: flex; gap: 12px; padding: 9px 0; border-bottom: 1px solid var(--border); font-size: 12px; }
+        .log-row:last-child { border-bottom: none; }
+        .log-time { color: var(--gold-strong); font-weight: 600; flex-shrink: 0; }
+        .log-text { color: var(--text); line-height: 1.4; }
+
+        /* Assistant — side pull tab */
+        .assist-tab { position: fixed; top: 50%; right: 0; transform: translateY(-50%) rotate(180deg);
+          writing-mode: vertical-rl; background: var(--gold); color: var(--ink); font-weight: 700;
+          font-size: 11.5px; letter-spacing: 0.08em; padding: 18px 9px; cursor: pointer;
+          border-radius: 10px 0 0 10px; display: flex; align-items: center; gap: 6px; z-index: 50;
+          text-transform: uppercase; box-shadow: -4px 0 16px rgba(0,0,0,0.25); }
+        .assist-panel { position: fixed; top: 0; right: 0; height: 100%; width: 340px; background: var(--panel);
+          border-left: 1px solid var(--border); display: flex; flex-direction: column; z-index: 60;
+          box-shadow: -12px 0 32px rgba(0,0,0,0.3); }
+        .assist-header { display: flex; align-items: center; justify-content: space-between; padding: 16px 18px;
+          border-bottom: 1px solid var(--border); }
+        .assist-title { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--gold-strong); font-weight: 700; }
+        .assist-close { color: var(--muted); cursor: pointer; display: flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 500; }
+        .assist-messages { flex: 1; overflow-y: auto; padding: 16px 18px; display: flex; flex-direction: column; gap: 10px; }
+        .msg { font-size: 12.5px; max-width: 88%; padding: 10px 12px; border-radius: 10px; line-height: 1.45; color: var(--text); }
+        .msg.ai { background: var(--panel-raised); align-self: flex-start; }
+        .msg.user { background: rgba(212,176,115,0.16); align-self: flex-end; }
+        .assist-input-row { display: flex; gap: 8px; padding: 14px; border-top: 1px solid var(--border); }
+        .assist-input { flex: 1; background: var(--panel-raised); border: 1px solid var(--border); border-radius: 8px;
+          padding: 10px 12px; font-size: 12.5px; color: var(--text); outline: none; }
+        .assist-send { background: var(--gold); border: none; border-radius: 8px; width: 38px; display: flex;
+          align-items: center; justify-content: center; color: var(--ink); cursor: pointer; }
       `}</style>
 
-      {/* STATUS BAR */}
-      <div className="status-bar">
+      {/* TOP BAR */}
+      <div className="top-bar">
         <div className="brand">
-          <span className="brand-dot" />
+          <svg className="seal" viewBox="0 0 48 48" fill="none">
+            <circle cx="24" cy="24" r="21" stroke="var(--gold-strong)" strokeWidth="1.4" />
+            <circle cx="24" cy="24" r="16" stroke="var(--gold-strong)" strokeWidth="0.9" opacity="0.6" />
+            <path d="M24 11 L26.7 20 L36 20 L28.6 25.7 L31.3 34.7 L24 29 L16.7 34.7 L19.4 25.7 L12 20 L21.3 20 Z"
+              fill="none" stroke="var(--gold-strong)" strokeWidth="1.2" />
+          </svg>
           <div>
-            <div className="brand-title display">KSP INTELLIQ</div>
+            <div className="brand-title display">KSP IntelliQ</div>
             <div className="brand-sub">Crime Intelligence &amp; Decision Support</div>
           </div>
         </div>
-        <div className="status-right">
+        <div className="top-right">
           <div className="clock mono">{clock.toLocaleTimeString()} · {clock.toLocaleDateString()}</div>
-          <Bell size={16} color="var(--text-muted)" />
+          <div className="icon-btn" onClick={() => setTheme(theme === "dark" ? "light" : "dark")} title="Toggle theme">
+            {theme === "dark" ? <Sun size={15} /> : <Moon size={15} />}
+          </div>
+          <div className="icon-btn"><Bell size={15} /></div>
           {officer && (
-            <div className="officer-chip">
+            <div className="id-badge">
+              <div className="id-photo"><Shield size={13} /></div>
               <div>
-                <div>{officer.name}</div>
-                <div className="officer-role">{officer.role} · {officer.station}</div>
+                <div className="id-name">{officer.name}</div>
+                <div className="id-role">{officer.role} · {officer.station}</div>
+                <div className="id-badge-no mono">{officer.badge}</div>
               </div>
             </div>
           )}
         </div>
       </div>
 
-      <div className="body-wrap">
-        {/* NAV RAIL */}
-        <div className="nav-rail">
-          {NAV_ITEMS.map(({ icon: Icon, label, active }) => (
-            <div key={label} className={`nav-item ${active ? "active" : ""}`} title={label}>
-              <Icon size={19} />
-            </div>
-          ))}
+      {/* FOLDER TABS */}
+      <div className="tab-row">
+        {TABS.map(({ icon: Icon, label, active }) => (
+          <div key={label} className={`tab ${active ? "active" : ""}`}>
+            <Icon size={13} /> {label}
+          </div>
+        ))}
+      </div>
+
+      {/* MAIN */}
+      <div className="main">
+        <div className="section-title">Live Overview</div>
+        <div className="kpi-row">
+          <StatCard label="Total Crimes" value={stats?.totalCrimes ?? "—"} tone="gold" icon={Shield} />
+          <StatCard label="Open FIRs" value={stats?.openFirs ?? "—"} tone="wine" icon={FileText} />
+          <StatCard label="Solved Cases" value={stats?.solved ?? "—"} tone="sage" icon={Search} />
+          <StatCard label="Active Investigations" value={stats?.activeInvestigations ?? "—"} tone="wine" icon={Users} />
         </div>
 
-        {/* MAIN */}
-        <div className="main">
-          <div className="section-title">Live Overview</div>
-          <div className="kpi-row">
-            <StatCard label="Total Crimes" value={stats?.totalCrimes ?? "—"} accent="var(--accent-cyan)" icon={ShieldAlert} />
-            <StatCard label="Open FIRs" value={stats?.openFirs ?? "—"} accent="var(--accent-amber)" icon={FileText} />
-            <StatCard label="Solved Cases" value={stats?.solved ?? "—"} accent="var(--accent-cyan)" icon={TrendingUp} />
-            <StatCard label="Active Investigations" value={stats?.activeInvestigations ?? "—"} accent="var(--accent-red)" icon={Search} />
-          </div>
-
-          <div className="grid-2">
-            <HudFrame>
-              <div className="section-title" style={{ marginBottom: 8 }}>Hotspot Scan — District Grid</div>
-              <div className="radar-box">
-                <div className="radar-ring" style={{ width: 60, height: 60 }} />
-                <div className="radar-ring" style={{ width: 120, height: 120 }} />
-                <div className="radar-ring" style={{ width: 180, height: 180 }} />
-                <div className="radar-sweep" />
-                <div className="radar-dot" style={{ top: "30%", left: "62%" }} />
-                <div className="radar-dot" style={{ top: "68%", left: "38%" }} />
-                <div className="radar-dot" style={{ top: "45%", left: "25%" }} />
-                <div className="radar-label mono">SCAN ACTIVE · 6 ZONES TRACKED</div>
-              </div>
-            </HudFrame>
-
-            <HudFrame className="ticker-panel">
-              <div className="ticker-header"><Radio size={13} /> Live Alerts</div>
-              <div className="ticker-list">
-                {MOCK_ALERTS.map((a, i) => <div key={i} className="ticker-item mono">{a}</div>)}
-              </div>
-            </HudFrame>
-          </div>
-
-          <div className="grid-2">
-            <HudFrame>
-              <div className="section-title">7-Day Crime Trend</div>
-              <ResponsiveContainer width="100%" height={200}>
-                <LineChart data={MOCK_TREND}>
-                  <CartesianGrid stroke="var(--border-line)" strokeDasharray="3 3" vertical={false} />
-                  <XAxis dataKey="day" stroke="var(--text-muted)" fontSize={11} tickLine={false} axisLine={false} />
-                  <YAxis stroke="var(--text-muted)" fontSize={11} tickLine={false} axisLine={false} />
-                  <Tooltip contentStyle={{ background: "var(--bg-raised)", border: "1px solid var(--border-line)", fontSize: 12 }} />
-                  <Line type="monotone" dataKey="crimes" stroke="var(--accent-cyan)" strokeWidth={2} dot={{ r: 3, fill: "var(--accent-amber)" }} />
-                </LineChart>
-              </ResponsiveContainer>
-            </HudFrame>
-
-            <HudFrame>
-              <div className="section-title">Predictive Hotspots</div>
+        <div className="grid-2">
+          <CaseCard stamp="Predictive">
+            <div className="section-title">Hotspot Forecast — District Grid</div>
+            <div className="forecast-body">
               {MOCK_HOTSPOTS.map((h) => (
                 <div className="hotspot-row" key={h.area}>
                   <div>
                     <div>{h.area}</div>
-                    <div style={{ color: "var(--text-muted)", fontSize: 11 }}>{h.type}</div>
+                    <div style={{ color: "var(--muted)", fontSize: 11, fontWeight: 400 }}>{h.type}</div>
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <div className="risk-bar-track"><div className="risk-bar-fill" style={{ width: `${h.risk}%` }} /></div>
-                    <span className="mono" style={{ fontSize: 11, color: "var(--accent-amber)" }}>{h.risk}%</span>
+                    <div className="risk-track"><div className="risk-fill" style={{ width: `${h.risk}%` }} /></div>
+                    <span className="mono" style={{ fontSize: 11, color: "var(--gold-strong)", fontWeight: 600 }}>{h.risk}%</span>
                   </div>
                 </div>
               ))}
-            </HudFrame>
-          </div>
+            </div>
+          </CaseCard>
+
+          <CaseCard>
+            <div className="section-title"><Radio size={11} style={{ verticalAlign: -1, marginRight: 5 }} />Incident Log</div>
+            <div className="log-list">
+              {MOCK_LOG.map((l, i) => (
+                <div className="log-row" key={i}>
+                  <span className="log-time mono">{l.time}</span>
+                  <span className="log-text">{l.text}</span>
+                </div>
+              ))}
+            </div>
+          </CaseCard>
+        </div>
+
+        <div className="grid-2">
+          <CaseCard>
+            <div className="section-title">7-Day Crime Trend</div>
+            <ResponsiveContainer width="100%" height={200}>
+              <LineChart data={MOCK_TREND}>
+                <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" vertical={false} />
+                <XAxis dataKey="day" stroke="var(--muted)" fontSize={11} tickLine={false} axisLine={false} />
+                <YAxis stroke="var(--muted)" fontSize={11} tickLine={false} axisLine={false} />
+                <Tooltip contentStyle={{ background: "var(--panel-raised)", border: "1px solid var(--border)", borderRadius: 8, fontSize: 12, color: "var(--text)" }} />
+                <Line type="monotone" dataKey="crimes" stroke="var(--gold-strong)" strokeWidth={2.5} dot={{ r: 3, fill: "var(--wine)" }} />
+              </LineChart>
+            </ResponsiveContainer>
+          </CaseCard>
+
+          <CaseCard stamp="Verified">
+            <div className="section-title">Case Status Breakdown</div>
+            <div className="forecast-body">
+              <div className="hotspot-row">
+                <div>Solved</div>
+                <div className="mono" style={{ color: "var(--sage)", fontWeight: 700 }}>{stats?.solved ?? "—"}</div>
+              </div>
+              <div className="hotspot-row">
+                <div>Open / Under Investigation</div>
+                <div className="mono" style={{ color: "var(--wine)", fontWeight: 700 }}>{stats?.openFirs ?? "—"}</div>
+              </div>
+              <div className="hotspot-row">
+                <div>Active Field Cases</div>
+                <div className="mono" style={{ color: "var(--gold-strong)", fontWeight: 700 }}>{stats?.activeInvestigations ?? "—"}</div>
+              </div>
+            </div>
+          </CaseCard>
         </div>
       </div>
 
-      {/* AI ASSISTANT DOCK */}
+      {/* ASSISTANT — SIDE PULL TAB */}
       {!assistantOpen && (
-        <button className="ai-fab" onClick={() => setAssistantOpen(true)}>
-          <MessageSquare size={22} />
-        </button>
+        <div className="assist-tab" onClick={() => setAssistantOpen(true)}>
+          <MessageSquare size={13} /> Assistant
+        </div>
       )}
       {assistantOpen && (
-        <div className="ai-panel">
-          <div className="ai-header">
-            <div className="ai-title"><MessageSquare size={14} /> IntelliQ Assistant</div>
-            <X size={16} className="ai-close" onClick={() => setAssistantOpen(false)} />
+        <div className="assist-panel">
+          <div className="assist-header">
+            <div className="assist-title"><MessageSquare size={14} /> IntelliQ Assistant</div>
+            <div className="assist-close" onClick={() => setAssistantOpen(false)}>
+              <ChevronLeft size={14} /> Close
+            </div>
           </div>
-          <div className="ai-messages" ref={scrollRef}>
+          <div className="assist-messages" ref={scrollRef}>
             {messages.map((m, i) => <div key={i} className={`msg ${m.from}`}>{m.text}</div>)}
           </div>
-          <div className="ai-input-row">
+          <div className="assist-input-row">
             <input
-              className="ai-input"
+              className="assist-input"
               placeholder="Ask about a FIR, area, or suspect…"
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && sendMessage()}
             />
-            <button className="ai-send" onClick={sendMessage}><Send size={14} /></button>
+            <button className="assist-send" onClick={sendMessage}><Send size={14} /></button>
           </div>
         </div>
       )}
