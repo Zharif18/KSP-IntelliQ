@@ -60,3 +60,102 @@ Search for the keywords to learn more about each warning.
 [info] [2026-07-09T16:38:31.782Z] : [1783615111782]  "GET"  "/app/static/js/bundle.js"
 [info] [2026-07-09T16:38:32.594Z] : [1783615112594]  "GET"  "/app/favicon.ico"
 [info] [2026-07-09T16:38:32.595Z] : [1783615112595]  "GET"  "/app/logo192.png"
+[debug] [2026-07-10T05:41:56.027Z] : 
+[debug] [2026-07-10T05:41:56.028Z] : ----------------------------------------------------------------------
+[debug] [2026-07-10T05:41:56.028Z] : Command:      D:\Software\Node.js\node.exe C:\Users\moham\AppData\Roaming\npm\node_modules\zcatalyst-cli\lib\bin\catalyst.js serve
+[debug] [2026-07-10T05:41:56.028Z] : CLI Version:  1.26.2
+[debug] [2026-07-10T05:41:56.028Z] : Platform:     win32
+[debug] [2026-07-10T05:41:56.029Z] : Node Version: v24.18.0
+[debug] [2026-07-10T05:41:56.029Z] : Time:         Fri Jul 10 2026 11:11:56 GMT+0530 (India Standard Time)
+[debug] [2026-07-10T05:41:56.029Z] : ----------------------------------------------------------------------
+[debug] [2026-07-10T05:41:56.029Z] : 
+[debug] [2026-07-10T05:41:56.713Z] : > authorizing via signed-in user option
+[debug] [2026-07-10T05:41:56.713Z] : > command requires scopes: ["ZohoCatalyst.projects.ALL","ZohoCatalyst.apigateway.apis.READ","ZohoCatalyst.apigateway.READ","ZohoCatalyst.segments.ALL","ZohoCatalyst.cache.READ","ZohoCatalyst.cache.CREATE","ZohoCatalyst.cache.DELETE","ZohoCatalyst.projects.ALL","ZohoCatalyst.cron.ALL","ZohoCatalyst.zcql.CREATE","ZohoCatalyst.projects.users.READ","ZohoCatalyst.projects.users.CREATE","ZohoCatalyst.projects.users.DELETE","ZohoCatalyst.projects.users.UPDATE","ZohoCatalyst.authentication.CREATE","ZohoCatalyst.email.CREATE","ZohoCatalyst.tables.ALL","ZohoCatalyst.tables.rows.ALL","ZohoCatalyst.tables.columns.ALL","ZohoCatalyst.tables.bulk.CREATE","ZohoCatalyst.tables.bulk.READ","ZohoCatalyst.folders.ALL","ZohoCatalyst.files.CREATE","ZohoCatalyst.files.READ","ZohoCatalyst.files.DELETE","ZohoCatalyst.functions.ALL","ZohoCatalyst.functions.EXECUTE","ZohoCatalyst.eventlistners.ALL","ZohoCatalyst.eventlisteners.produce","ZohoCatalyst.security.rules.Read","ZohoCatalyst.security.rules.Update","ZohoCatalyst.notifications.mobile","ZohoCatalyst.notifications.web","ZohoCatalyst.search.READ","ZohoCatalyst.mlkit.READ","QuickML.deployment.READ","ZohoCatalyst.pdfshot.execute","ZohoCatalyst.grid.READ","ZohoCatalyst.grid.terminate","ZohoCatalyst.circuits.execution.DELETE","ZohoCatalyst.circuits.execution.READ","ZohoCatalyst.circuits.execute","ZohoCatalyst.appsail.Read","ZohoCatalyst.jobpool.READ","ZohoCatalyst.job.ALL","ZohoCatalyst.nosql.READ","ZohoCatalyst.nosql.rows.ALL"]
+[debug] [2026-07-10T05:41:56.720Z] : > refreshing access token <
+[debug] [2026-07-10T05:41:56.721Z] : >>>> HTTP REQUEST : POST https://accounts.zoho.in/oauth/v2/token 
+<request body omitted>
+
+[debug] [2026-07-10T05:41:57.413Z] : <<<< HTTP RESPONSE : 200
+Response Headers: {"server":"ZGS","date":"Fri, 10 Jul 2026 05:41:55 GMT","content-type":"application/json;charset=UTF-8","content-length":"2523","connection":"keep-alive","cache-control":"no-store","x-content-type-options":"nosniff","pragma":"no-cache","x-frame-options":"SAMEORIGIN","vary":"accept-encoding","content-language":"en-US","strict-transport-security":"max-age=64072000; includeSubDomains; preload"}
+
+[debug] [2026-07-10T05:41:57.424Z] : >>>> HTTP REQUEST : GET https://api.catalyst.zoho.in/baas/v1/project/47727000000030026 
+
+[debug] [2026-07-10T05:41:58.022Z] : <<<< HTTP RESPONSE : 200
+Response Headers: {"server":"ZGS","date":"Fri, 10 Jul 2026 05:41:56 GMT","content-type":"application/vnd.catalyst.v2+json","transfer-encoding":"chunked","connection":"keep-alive","x-content-type-options":"nosniff","cache-control":"private,no-cache,no-store,max-age=0,must-revalidate","pragma":"no-cache","expires":"Thu, 01 Jan 1970 00:00:00 GMT","x-frame-options":"DENY","strict-transport-security":"max-age=64072000; includeSubDomains; preload"}
+
+[debug] [2026-07-10T05:41:58.023Z] : >>>> HTTP REQUEST : GET https://api.catalyst.zoho.in/baas/v1/project/47727000000030026/environment 
+
+[debug] [2026-07-10T05:41:58.080Z] : <<<< HTTP RESPONSE : 200
+Response Headers: {"server":"ZGS","date":"Fri, 10 Jul 2026 05:41:56 GMT","content-type":"application/vnd.catalyst.v2+json","transfer-encoding":"chunked","connection":"keep-alive","x-content-type-options":"nosniff","cache-control":"private,no-cache,no-store,max-age=0,must-revalidate","pragma":"no-cache","expires":"Thu, 01 Jan 1970 00:00:00 GMT","x-frame-options":"DENY","strict-transport-security":"max-age=64072000; includeSubDomains; preload"}
+
+[debug] [2026-07-10T05:41:58.173Z] : >>>> HTTP REQUEST : GET https://api.catalyst.zoho.in/baas/get-details 
+Query params: {"feature_name":"runtime"}
+
+[debug] [2026-07-10T05:41:58.234Z] : <<<< HTTP RESPONSE : 200
+Response Headers: {"server":"ZGS","date":"Fri, 10 Jul 2026 05:41:56 GMT","content-type":"application/vnd.catalyst.v2+json","transfer-encoding":"chunked","connection":"keep-alive","x-content-type-options":"nosniff","cache-control":"private,no-cache,no-store,max-age=0,must-revalidate","pragma":"no-cache","expires":"Thu, 01 Jan 1970 00:00:00 GMT","x-frame-options":"DENY","strict-transport-security":"max-age=64072000; includeSubDomains; preload"}
+
+[debug] [2026-07-10T05:41:58.237Z] : >>>> HTTP REQUEST : GET https://api.catalyst.zoho.in/baas/v1/project/47727000000030026/function 
+Query params: {"type":"basicio,event,cron,applogic,integration,browser_logic,job"}
+
+[debug] [2026-07-10T05:41:58.296Z] : <<<< HTTP RESPONSE : 200
+Response Headers: {"server":"ZGS","date":"Fri, 10 Jul 2026 05:41:57 GMT","content-type":"application/vnd.catalyst.v2+json","transfer-encoding":"chunked","connection":"keep-alive","x-content-type-options":"nosniff","cache-control":"private,no-cache,no-store,max-age=0,must-revalidate","pragma":"no-cache","expires":"Thu, 01 Jan 1970 00:00:00 GMT","x-frame-options":"DENY","strict-transport-security":"max-age=64072000; includeSubDomains; preload"}
+
+[warn] [2026-07-10T05:41:58.305Z] : ‼ skipping serve of function [ksp_intelli_q_function] since deployment.stack is unknown in catalyst-config.json file.
+[warn] [2026-07-10T05:41:58.305Z] : ‼ functions: No targets are ready to be served in local
+[debug] [2026-07-10T05:41:58.388Z] : No basic functions to add
+[info] [2026-07-10T05:41:59.902Z] : [react-plugin]: Starting the development server...
+
+[info] [2026-07-10T05:41:59.903Z] : 
+[info] [2026-07-10T05:41:59.903Z] : i Client[KSPIntelliQ]: Plugin : "zcatalyst-cli-plugin-react" is used for client serve
+[info] [2026-07-10T05:41:59.904Z] : 
+[debug] [2026-07-10T05:42:00.622Z] : No API Gateway configuration found. Skipping API Gateway rules
+[info] [2026-07-10T05:42:00.624Z] : 
+[info] [2026-07-10T05:42:00.624Z] :  >>>>>>>>>>>>> Web Client <<<<<<<<<<<<
+[info] [2026-07-10T05:42:00.624Z] : i client[KSPIntelliQ]: http://localhost:3000/app/
+[info] [2026-07-10T05:42:00.625Z] : 
+[info] [2026-07-10T05:42:01.313Z] : [react-plugin]: Compiled successfully!
+[info] [2026-07-10T05:42:01.314Z] : [react-plugin]: 
+[info] [2026-07-10T05:42:01.314Z] : [react-plugin]: You can now view react-app in the browser.
+[info] [2026-07-10T05:42:01.314Z] : [react-plugin]: 
+[info] [2026-07-10T05:42:01.314Z] : [react-plugin]:   Local:            http://localhost:3000/app/
+[info] [2026-07-10T05:42:01.314Z] : [react-plugin]:   On Your Network:  http://172.31.95.79:3000/app/
+[info] [2026-07-10T05:42:01.315Z] : [react-plugin]: 
+[info] [2026-07-10T05:42:01.315Z] : [react-plugin]: Note that the development build is not optimized.
+[info] [2026-07-10T05:42:01.315Z] : [react-plugin]: To create a production build, use npm run build.
+[info] [2026-07-10T05:42:01.315Z] : [react-plugin]: 
+[info] [2026-07-10T05:42:01.520Z] : [1783662121520]  "GET"  "/app/"
+[info] [2026-07-10T05:42:01.560Z] : [1783662121560]  "GET"  "/__catalyst/sdk/init.js"
+[info] [2026-07-10T05:42:01.873Z] : [1783662121872]  "GET"  "/app/manifest.json"
+[info] [2026-07-10T05:42:02.910Z] : [1783662122909]  "GET"  "/app/static/js/bundle.js"
+[info] [2026-07-10T05:42:07.743Z] : [1783662127743]  "GET"  "/app/favicon.ico"
+[info] [2026-07-10T05:42:07.746Z] : [1783662127745]  "GET"  "/app/logo192.png"
+[info] [2026-07-10T06:32:51.274Z] : [react-plugin]: Compiling...
+[info] [2026-07-10T06:32:54.066Z] : [react-plugin]: Failed to compile.
+
+[info] [2026-07-10T06:32:54.066Z] : [react-plugin]: SyntaxError: D:\COLLEGE\Hackathon\Datathon\ksp-intelliQ\react-app\src\components\Dashboard.jsx: Unexpected token (144:8)
+  142 | 
+  143 |         /* Status bar */
+> 144 |         .status-bar {
+      |         ^
+  145 |           display: flex; align-items: center; justify-content: space-between;
+  146 |           padding: 10px 20px; background: var(--bg-panel);
+  147 |           border-bottom: 1px solid var(--border-line);
+    at parser.next (<anonymous>)
+    at normalizeFile.next (<anonymous>)
+    at run.next (<anonymous>)
+    at transform.next (<anonymous>)
+[info] [2026-07-10T06:32:59.110Z] : [react-plugin]: Compiling...
+[info] [2026-07-10T06:32:59.745Z] : [react-plugin]: Compiled with warnings.
+
+[info] [2026-07-10T06:32:59.745Z] : [react-plugin]: [eslint] 
+src\components\Dashboard.jsx
+  Line 4:28:  'Clock' is defined but never used         no-unused-vars
+  Line 4:65:  'ChevronRight' is defined but never used  no-unused-vars
+[info] [2026-07-10T06:32:59.746Z] : [react-plugin]: 
+Search for the keywords to learn more about each warning.
+[info] [2026-07-10T06:32:59.746Z] : [react-plugin]: To ignore, add // eslint-disable-next-line to the line before.
+
+[info] [2026-07-10T06:33:00.070Z] : [1783665180069]  "GET"  "/app/main.78b6de9e94a458412878.hot-update.json"
+[info] [2026-07-10T06:33:00.321Z] : [1783665180321]  "GET"  "/app/main.78b6de9e94a458412878.hot-update.js"
+[info] [2026-07-10T06:33:00.408Z] : [1783665180408]  "GET"  "/app/main.89dd5397b60aac96cda5.hot-update.json"
+[info] [2026-07-10T06:33:00.659Z] : [1783665180659]  "GET"  "/app/main.89dd5397b60aac96cda5.hot-update.js"

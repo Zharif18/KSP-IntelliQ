@@ -7,14 +7,6 @@ import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid
 } from "recharts";
 
-/* ---------------------------------------------------------------------
-   CATALYST INTEGRATION LAYER
-   ---------------------------------------------------------------------
-   In your actual Catalyst project, these calls hit your deployed
-   Functions (e.g. /server/ksp_backend/get_current_officer). Here they
-   fall back to demo data so the UI always renders, even outside
-   Catalyst — swap USE_MOCK to false once your functions are live.
------------------------------------------------------------------------- */
 const USE_MOCK = true;
 
 async function callCatalystFunction(endpoint, fallback) {
