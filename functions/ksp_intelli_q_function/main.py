@@ -1,5 +1,5 @@
 # functions/ksp_backend/main.py
-from zcatalyst import initialize
+from zcatalyst import initialize # type: ignore
 
 def get_current_officer(request, response):
     catalyst_app = initialize(request)
