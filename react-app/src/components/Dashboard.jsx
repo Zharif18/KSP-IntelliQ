@@ -6,6 +6,8 @@ import {
 import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid
 } from "recharts";
+import CrimeMap from "./CrimeMap";
+import FIRManagement from "./FIRManagement";
 
 /* ---------------------------------------------------------------------
    CATALYST INTEGRATION LAYER
@@ -48,7 +50,7 @@ const MOCK_LOG = [
 ];
 
 const TABS = [
-  { icon: BarChart3, label: "Dashboard", active: true },
+  { icon: BarChart3, label: "Dashboard" },
   { icon: Map, label: "Crime Map" },
   { icon: FileText, label: "Cases" },
   { icon: Users, label: "Officers" },
@@ -87,6 +89,7 @@ function StatCard({ label, value, tone, icon: Icon }) {
 
 export default function KSPIntelliQDashboard() {
   const [theme, setTheme] = useState("dark");
+  const [activeTab, setActiveTab] = useState("Dashboard");
   const [officer, setOfficer] = useState(null);
   const [stats, setStats] = useState(null);
   const [assistantOpen, setAssistantOpen] = useState(false);
@@ -286,8 +289,8 @@ export default function KSPIntelliQDashboard() {
 
       {/* FOLDER TABS */}
       <div className="tab-row">
-        {TABS.map(({ icon: Icon, label, active }) => (
-          <div key={label} className={`tab ${active ? "active" : ""}`}>
+        {TABS.map(({ icon: Icon, label }) => (
+          <div key={label} className={`tab ${activeTab === label ? "active" : ""}`} onClick={() => setActiveTab(label)}>
             <Icon size={13} /> {label}
           </div>
         ))}
@@ -295,6 +298,16 @@ export default function KSPIntelliQDashboard() {
 
       {/* MAIN */}
       <div className="main">
+        {activeTab === "Crime Map" ? (
+          <CrimeMap />
+        ) : activeTab === "Cases" ? (
+          <FIRManagement />
+        ) : activeTab !== "Dashboard" ? (
+          <div style={{ padding: 40, textAlign: "center", color: "var(--muted)" }}>
+            {activeTab} module — build this next.
+          </div>
+        ) : (
+        <>
         <div className="section-title">Live Overview</div>
         <div className="kpi-row">
           <StatCard label="Total Crimes" value={stats?.totalCrimes ?? "—"} tone="gold" icon={Shield} />
@@ -367,6 +380,8 @@ export default function KSPIntelliQDashboard() {
             </div>
           </CaseCard>
         </div>
+        </>
+        )}
       </div>
 
       {/* ASSISTANT — SIDE PULL TAB */}
