@@ -1,6 +1,7 @@
 {
   "defaults": {
-    "project": 1
+    "project": 1,
+    "env": 1
   },
   "actives": {
     "project": 1,
@@ -21,7 +22,15 @@
           "idx": 1,
           "id": "60073645212",
           "name": "Development",
-          "type": 3
+          "type": 3,
+          "env_status": "Active",
+          "project_details": {
+            "project_name": "KSP-IntelliQ",
+            "id": "47727000000030026",
+            "project_type": "Live"
+          },
+          "is_default": true,
+          "action_required": false
         }
       ]
     }

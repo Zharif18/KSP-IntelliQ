@@ -1,0 +1,5 @@
+DesignationID,DesignationName,SortOrder,Active
+DSG01,Investigating Officer,1,1
+DSG02,Station House Officer,2,1
+DSG03,Beat Constable,3,1
+DSG04,Circle Inspector,4,1

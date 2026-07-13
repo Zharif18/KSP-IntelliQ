@@ -1,0 +1,8 @@
+RankID,RankName,Hierarchy,Active
+RNK01,Constable,10,1
+RNK02,Head Constable,9,1
+RNK03,Asst. Sub-Inspector,8,1
+RNK04,Sub-Inspector,7,1
+RNK05,Inspector,6,1
+RNK06,Deputy Superintendent,5,1
+RNK07,Superintendent of Police,4,1

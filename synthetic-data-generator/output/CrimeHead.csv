@@ -1,0 +1,7 @@
+CrimeHeadID,CrimeGroupName,Active
+CH01,Crimes Against Body,1
+CH02,Crimes Against Property,1
+CH03,Crimes Against Women,1
+CH04,Economic Offences,1
+CH05,Cyber Crime,1
+CH06,Public Order & Miscellaneous,1

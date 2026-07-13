@@ -1,0 +1,192 @@
+UnitID,UnitName,TypeID,ParentUnit,NationalityID,StateID,DistrictID,Active
+UNIT0001,Bagalkot Town Police Station,UT01,,IN,ST01,DIST0001,1
+UNIT0002,Bagalkot Traffic Police Station,UT01,,IN,ST01,DIST0001,1
+UNIT0003,Bagalkot Women Police Station,UT01,,IN,ST01,DIST0001,1
+UNIT0004,Bagalkot Town Police Station,UT01,,IN,ST01,DIST0001,1
+UNIT0005,Ballari Town Police Station,UT01,,IN,ST01,DIST0002,1
+UNIT0006,Ballari Industrial Police Station,UT01,,IN,ST01,DIST0002,1
+UNIT0007,Ballari Cyber Crime Police Station,UT01,,IN,ST01,DIST0002,1
+UNIT0008,Ballari Traffic Police Station,UT01,,IN,ST01,DIST0002,1
+UNIT0009,Ballari Traffic Police Station,UT01,,IN,ST01,DIST0002,1
+UNIT0010,Ballari Rural Police Station,UT01,,IN,ST01,DIST0002,1
+UNIT0011,Ballari North Police Station,UT01,,IN,ST01,DIST0002,1
+UNIT0012,Ballari Industrial Police Station,UT01,,IN,ST01,DIST0002,1
+UNIT0013,Camp Police Station,UT01,,IN,ST01,DIST0003,1
+UNIT0014,Market Police Station,UT01,,IN,ST01,DIST0003,1
+UNIT0015,Tilakwadi Police Station,UT01,,IN,ST01,DIST0003,1
+UNIT0016,APMC Police Station,UT01,,IN,ST01,DIST0003,1
+UNIT0017,Belagavi West Police Station,UT01,,IN,ST01,DIST0003,1
+UNIT0018,Belagavi Rural Police Station,UT01,,IN,ST01,DIST0003,1
+UNIT0019,Belagavi North Police Station,UT01,,IN,ST01,DIST0003,1
+UNIT0020,Bengaluru Rural Industrial Police Station,UT01,,IN,ST01,DIST0004,1
+UNIT0021,Bengaluru Rural Cyber Crime Police Station,UT01,,IN,ST01,DIST0004,1
+UNIT0022,Bengaluru Rural East Police Station,UT01,,IN,ST01,DIST0004,1
+UNIT0023,Bengaluru Rural Market Police Station,UT01,,IN,ST01,DIST0004,1
+UNIT0024,Bengaluru Rural North Police Station,UT01,,IN,ST01,DIST0004,1
+UNIT0025,Bengaluru Rural East Police Station,UT01,,IN,ST01,DIST0004,1
+UNIT0026,Whitefield Police Station,UT01,,IN,ST01,DIST0005,1
+UNIT0027,Indiranagar Police Station,UT01,,IN,ST01,DIST0005,1
+UNIT0028,Cubbon Park Police Station,UT01,,IN,ST01,DIST0005,1
+UNIT0029,Jayanagar Police Station,UT01,,IN,ST01,DIST0005,1
+UNIT0030,Electronic City Police Station,UT01,,IN,ST01,DIST0005,1
+UNIT0031,HAL Police Station,UT01,,IN,ST01,DIST0005,1
+UNIT0032,Koramangala Police Station,UT01,,IN,ST01,DIST0005,1
+UNIT0033,Bidar South Police Station,UT01,,IN,ST01,DIST0006,1
+UNIT0034,Bidar Traffic Police Station,UT01,,IN,ST01,DIST0006,1
+UNIT0035,Bidar Town Police Station,UT01,,IN,ST01,DIST0006,1
+UNIT0036,Bidar Traffic Police Station,UT01,,IN,ST01,DIST0006,1
+UNIT0037,Bidar Rural Police Station,UT01,,IN,ST01,DIST0006,1
+UNIT0038,Bidar Central Police Station,UT01,,IN,ST01,DIST0006,1
+UNIT0039,Bidar Town Police Station,UT01,,IN,ST01,DIST0006,1
+UNIT0040,Bidar Women Police Station,UT01,,IN,ST01,DIST0006,1
+UNIT0041,Chamarajanagar Rural Police Station,UT01,,IN,ST01,DIST0007,1
+UNIT0042,Chamarajanagar Town Police Station,UT01,,IN,ST01,DIST0007,1
+UNIT0043,Chamarajanagar West Police Station,UT01,,IN,ST01,DIST0007,1
+UNIT0044,Chamarajanagar Women Police Station,UT01,,IN,ST01,DIST0007,1
+UNIT0045,Chamarajanagar West Police Station,UT01,,IN,ST01,DIST0007,1
+UNIT0046,Chamarajanagar East Police Station,UT01,,IN,ST01,DIST0007,1
+UNIT0047,Chikkaballapur Women Police Station,UT01,,IN,ST01,DIST0008,1
+UNIT0048,Chikkaballapur Central Police Station,UT01,,IN,ST01,DIST0008,1
+UNIT0049,Chikkaballapur West Police Station,UT01,,IN,ST01,DIST0008,1
+UNIT0050,Chikkaballapur Cyber Crime Police Station,UT01,,IN,ST01,DIST0008,1
+UNIT0051,Chikkaballapur Central Police Station,UT01,,IN,ST01,DIST0008,1
+UNIT0052,Chikkaballapur Women Police Station,UT01,,IN,ST01,DIST0008,1
+UNIT0053,Chikkaballapur Central Police Station,UT01,,IN,ST01,DIST0008,1
+UNIT0054,Chikkaballapur Women Police Station,UT01,,IN,ST01,DIST0008,1
+UNIT0055,Chikkamagaluru Women Police Station,UT01,,IN,ST01,DIST0009,1
+UNIT0056,Chikkamagaluru Industrial Police Station,UT01,,IN,ST01,DIST0009,1
+UNIT0057,Chikkamagaluru Market Police Station,UT01,,IN,ST01,DIST0009,1
+UNIT0058,Chikkamagaluru Central Police Station,UT01,,IN,ST01,DIST0009,1
+UNIT0059,Chikkamagaluru North Police Station,UT01,,IN,ST01,DIST0009,1
+UNIT0060,Chitradurga East Police Station,UT01,,IN,ST01,DIST0010,1
+UNIT0061,Chitradurga Town Police Station,UT01,,IN,ST01,DIST0010,1
+UNIT0062,Chitradurga North Police Station,UT01,,IN,ST01,DIST0010,1
+UNIT0063,Chitradurga Market Police Station,UT01,,IN,ST01,DIST0010,1
+UNIT0064,Chitradurga Industrial Police Station,UT01,,IN,ST01,DIST0010,1
+UNIT0065,Chitradurga Central Police Station,UT01,,IN,ST01,DIST0010,1
+UNIT0066,Chitradurga South Police Station,UT01,,IN,ST01,DIST0010,1
+UNIT0067,Chitradurga South Police Station,UT01,,IN,ST01,DIST0010,1
+UNIT0068,Mangaluru City Police Station,UT01,,IN,ST01,DIST0011,1
+UNIT0069,Pandeshwar Police Station,UT01,,IN,ST01,DIST0011,1
+UNIT0070,Kavoor Police Station,UT01,,IN,ST01,DIST0011,1
+UNIT0071,Bunder Police Station,UT01,,IN,ST01,DIST0011,1
+UNIT0072,Davanagere Traffic Police Station,UT01,,IN,ST01,DIST0012,1
+UNIT0073,Davanagere East Police Station,UT01,,IN,ST01,DIST0012,1
+UNIT0074,Davanagere Women Police Station,UT01,,IN,ST01,DIST0012,1
+UNIT0075,Davanagere Women Police Station,UT01,,IN,ST01,DIST0012,1
+UNIT0076,Davanagere East Police Station,UT01,,IN,ST01,DIST0012,1
+UNIT0077,Davanagere East Police Station,UT01,,IN,ST01,DIST0012,1
+UNIT0078,Davanagere Traffic Police Station,UT01,,IN,ST01,DIST0012,1
+UNIT0079,Hubballi City Police Station,UT01,,IN,ST01,DIST0013,1
+UNIT0080,Vidyanagar Police Station,UT01,,IN,ST01,DIST0013,1
+UNIT0081,Old Hubli Police Station,UT01,,IN,ST01,DIST0013,1
+UNIT0082,Dharwad Market Police Station,UT01,,IN,ST01,DIST0013,1
+UNIT0083,Dharwad West Police Station,UT01,,IN,ST01,DIST0013,1
+UNIT0084,Dharwad Industrial Police Station,UT01,,IN,ST01,DIST0013,1
+UNIT0085,Gadag Town Police Station,UT01,,IN,ST01,DIST0014,1
+UNIT0086,Gadag Women Police Station,UT01,,IN,ST01,DIST0014,1
+UNIT0087,Gadag Rural Police Station,UT01,,IN,ST01,DIST0014,1
+UNIT0088,Gadag Rural Police Station,UT01,,IN,ST01,DIST0014,1
+UNIT0089,Hassan Cyber Crime Police Station,UT01,,IN,ST01,DIST0015,1
+UNIT0090,Hassan Cyber Crime Police Station,UT01,,IN,ST01,DIST0015,1
+UNIT0091,Hassan Cyber Crime Police Station,UT01,,IN,ST01,DIST0015,1
+UNIT0092,Hassan East Police Station,UT01,,IN,ST01,DIST0015,1
+UNIT0093,Haveri South Police Station,UT01,,IN,ST01,DIST0016,1
+UNIT0094,Haveri Central Police Station,UT01,,IN,ST01,DIST0016,1
+UNIT0095,Haveri Rural Police Station,UT01,,IN,ST01,DIST0016,1
+UNIT0096,Haveri Cyber Crime Police Station,UT01,,IN,ST01,DIST0016,1
+UNIT0097,Haveri East Police Station,UT01,,IN,ST01,DIST0016,1
+UNIT0098,Haveri North Police Station,UT01,,IN,ST01,DIST0016,1
+UNIT0099,Kalaburagi West Police Station,UT01,,IN,ST01,DIST0017,1
+UNIT0100,Kalaburagi Industrial Police Station,UT01,,IN,ST01,DIST0017,1
+UNIT0101,Kalaburagi Market Police Station,UT01,,IN,ST01,DIST0017,1
+UNIT0102,Kalaburagi Women Police Station,UT01,,IN,ST01,DIST0017,1
+UNIT0103,Kalaburagi Traffic Police Station,UT01,,IN,ST01,DIST0017,1
+UNIT0104,Kalaburagi Industrial Police Station,UT01,,IN,ST01,DIST0017,1
+UNIT0105,Kodagu East Police Station,UT01,,IN,ST01,DIST0018,1
+UNIT0106,Kodagu Market Police Station,UT01,,IN,ST01,DIST0018,1
+UNIT0107,Kodagu West Police Station,UT01,,IN,ST01,DIST0018,1
+UNIT0108,Kodagu Rural Police Station,UT01,,IN,ST01,DIST0018,1
+UNIT0109,Kodagu Town Police Station,UT01,,IN,ST01,DIST0018,1
+UNIT0110,Kodagu Market Police Station,UT01,,IN,ST01,DIST0018,1
+UNIT0111,Kodagu Central Police Station,UT01,,IN,ST01,DIST0018,1
+UNIT0112,Kodagu Town Police Station,UT01,,IN,ST01,DIST0018,1
+UNIT0113,Kolar Women Police Station,UT01,,IN,ST01,DIST0019,1
+UNIT0114,Kolar Women Police Station,UT01,,IN,ST01,DIST0019,1
+UNIT0115,Kolar West Police Station,UT01,,IN,ST01,DIST0019,1
+UNIT0116,Kolar Town Police Station,UT01,,IN,ST01,DIST0019,1
+UNIT0117,Kolar East Police Station,UT01,,IN,ST01,DIST0019,1
+UNIT0118,Koppal South Police Station,UT01,,IN,ST01,DIST0020,1
+UNIT0119,Koppal East Police Station,UT01,,IN,ST01,DIST0020,1
+UNIT0120,Koppal Traffic Police Station,UT01,,IN,ST01,DIST0020,1
+UNIT0121,Koppal Industrial Police Station,UT01,,IN,ST01,DIST0020,1
+UNIT0122,Koppal South Police Station,UT01,,IN,ST01,DIST0020,1
+UNIT0123,Koppal East Police Station,UT01,,IN,ST01,DIST0020,1
+UNIT0124,Koppal Rural Police Station,UT01,,IN,ST01,DIST0020,1
+UNIT0125,Koppal Central Police Station,UT01,,IN,ST01,DIST0020,1
+UNIT0126,Mandya North Police Station,UT01,,IN,ST01,DIST0021,1
+UNIT0127,Mandya East Police Station,UT01,,IN,ST01,DIST0021,1
+UNIT0128,Mandya South Police Station,UT01,,IN,ST01,DIST0021,1
+UNIT0129,Mandya West Police Station,UT01,,IN,ST01,DIST0021,1
+UNIT0130,Mandya Market Police Station,UT01,,IN,ST01,DIST0021,1
+UNIT0131,Mandya Town Police Station,UT01,,IN,ST01,DIST0021,1
+UNIT0132,Mandya Traffic Police Station,UT01,,IN,ST01,DIST0021,1
+UNIT0133,Nazarbad Police Station,UT01,,IN,ST01,DIST0022,1
+UNIT0134,Vijayanagar Police Station,UT01,,IN,ST01,DIST0022,1
+UNIT0135,Devaraja Police Station,UT01,,IN,ST01,DIST0022,1
+UNIT0136,Lakshmipuram Police Station,UT01,,IN,ST01,DIST0022,1
+UNIT0137,Raichur Town Police Station,UT01,,IN,ST01,DIST0023,1
+UNIT0138,Raichur Women Police Station,UT01,,IN,ST01,DIST0023,1
+UNIT0139,Raichur Industrial Police Station,UT01,,IN,ST01,DIST0023,1
+UNIT0140,Raichur Rural Police Station,UT01,,IN,ST01,DIST0023,1
+UNIT0141,Raichur Cyber Crime Police Station,UT01,,IN,ST01,DIST0023,1
+UNIT0142,Raichur Industrial Police Station,UT01,,IN,ST01,DIST0023,1
+UNIT0143,Ramanagara North Police Station,UT01,,IN,ST01,DIST0024,1
+UNIT0144,Ramanagara Traffic Police Station,UT01,,IN,ST01,DIST0024,1
+UNIT0145,Ramanagara South Police Station,UT01,,IN,ST01,DIST0024,1
+UNIT0146,Ramanagara Cyber Crime Police Station,UT01,,IN,ST01,DIST0024,1
+UNIT0147,Ramanagara Town Police Station,UT01,,IN,ST01,DIST0024,1
+UNIT0148,Ramanagara Cyber Crime Police Station,UT01,,IN,ST01,DIST0024,1
+UNIT0149,Ramanagara Central Police Station,UT01,,IN,ST01,DIST0024,1
+UNIT0150,Shivamogga Industrial Police Station,UT01,,IN,ST01,DIST0025,1
+UNIT0151,Shivamogga Women Police Station,UT01,,IN,ST01,DIST0025,1
+UNIT0152,Shivamogga Rural Police Station,UT01,,IN,ST01,DIST0025,1
+UNIT0153,Shivamogga Market Police Station,UT01,,IN,ST01,DIST0025,1
+UNIT0154,Shivamogga Traffic Police Station,UT01,,IN,ST01,DIST0025,1
+UNIT0155,Shivamogga Central Police Station,UT01,,IN,ST01,DIST0025,1
+UNIT0156,Shivamogga Central Police Station,UT01,,IN,ST01,DIST0025,1
+UNIT0157,Tumakuru Industrial Police Station,UT01,,IN,ST01,DIST0026,1
+UNIT0158,Tumakuru East Police Station,UT01,,IN,ST01,DIST0026,1
+UNIT0159,Tumakuru Rural Police Station,UT01,,IN,ST01,DIST0026,1
+UNIT0160,Tumakuru Industrial Police Station,UT01,,IN,ST01,DIST0026,1
+UNIT0161,Tumakuru East Police Station,UT01,,IN,ST01,DIST0026,1
+UNIT0162,Udupi Central Police Station,UT01,,IN,ST01,DIST0027,1
+UNIT0163,Udupi Cyber Crime Police Station,UT01,,IN,ST01,DIST0027,1
+UNIT0164,Udupi Central Police Station,UT01,,IN,ST01,DIST0027,1
+UNIT0165,Udupi Women Police Station,UT01,,IN,ST01,DIST0027,1
+UNIT0166,Udupi Central Police Station,UT01,,IN,ST01,DIST0027,1
+UNIT0167,Uttara Kannada Central Police Station,UT01,,IN,ST01,DIST0028,1
+UNIT0168,Uttara Kannada Market Police Station,UT01,,IN,ST01,DIST0028,1
+UNIT0169,Uttara Kannada Central Police Station,UT01,,IN,ST01,DIST0028,1
+UNIT0170,Uttara Kannada Rural Police Station,UT01,,IN,ST01,DIST0028,1
+UNIT0171,Uttara Kannada North Police Station,UT01,,IN,ST01,DIST0028,1
+UNIT0172,Uttara Kannada Traffic Police Station,UT01,,IN,ST01,DIST0028,1
+UNIT0173,Uttara Kannada Traffic Police Station,UT01,,IN,ST01,DIST0028,1
+UNIT0174,Vijayapura North Police Station,UT01,,IN,ST01,DIST0029,1
+UNIT0175,Vijayapura East Police Station,UT01,,IN,ST01,DIST0029,1
+UNIT0176,Vijayapura Cyber Crime Police Station,UT01,,IN,ST01,DIST0029,1
+UNIT0177,Vijayapura Cyber Crime Police Station,UT01,,IN,ST01,DIST0029,1
+UNIT0178,Vijayapura North Police Station,UT01,,IN,ST01,DIST0029,1
+UNIT0179,Vijayapura South Police Station,UT01,,IN,ST01,DIST0029,1
+UNIT0180,Vijayapura Cyber Crime Police Station,UT01,,IN,ST01,DIST0029,1
+UNIT0181,Yadgir South Police Station,UT01,,IN,ST01,DIST0030,1
+UNIT0182,Yadgir Market Police Station,UT01,,IN,ST01,DIST0030,1
+UNIT0183,Yadgir Traffic Police Station,UT01,,IN,ST01,DIST0030,1
+UNIT0184,Yadgir Cyber Crime Police Station,UT01,,IN,ST01,DIST0030,1
+UNIT0185,Yadgir Cyber Crime Police Station,UT01,,IN,ST01,DIST0030,1
+UNIT0186,Yadgir Market Police Station,UT01,,IN,ST01,DIST0030,1
+UNIT0187,Vijayanagara Town Police Station,UT01,,IN,ST01,DIST0031,1
+UNIT0188,Vijayanagara Central Police Station,UT01,,IN,ST01,DIST0031,1
+UNIT0189,Vijayanagara South Police Station,UT01,,IN,ST01,DIST0031,1
+UNIT0190,Vijayanagara South Police Station,UT01,,IN,ST01,DIST0031,1
+UNIT0191,Vijayanagara Town Police Station,UT01,,IN,ST01,DIST0031,1

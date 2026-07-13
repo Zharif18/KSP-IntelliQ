@@ -1,7 +1,6 @@
-import json
 import logging
-import zcatalyst_sdk
 from flask import Request, make_response, jsonify
+import zcatalyst_sdk
 
 
 def handler(request: Request):
@@ -13,24 +12,20 @@ def handler(request: Request):
     try:
         app = zcatalyst_sdk.initialize()
 
-        if request.path == "/get_current_officer" and request.method == "GET":
-            return get_current_officer(app)
+        routes = {
+            ("/get_current_officer", "GET"): get_current_officer,
+            ("/get_lookups", "GET"): get_lookups,
+            ("/get_dashboard_stats", "GET"): get_dashboard_stats,
+            ("/search_case", "GET"): search_case,
+            ("/add_case", "POST"): add_case,
+            ("/update_case_status", "PUT"): update_case_status,
+        }
 
-        elif request.path == "/get_dashboard_stats" and request.method == "GET":
-            return get_dashboard_stats(app)
+        route_fn = routes.get((request.path, request.method))
+        if not route_fn:
+            return make_response(jsonify({"error": "Unknown route"}), 404)
 
-        elif request.path == "/search_fir" and request.method == "GET":
-            return search_fir(app, request)
-
-        elif request.path == "/add_fir" and request.method == "POST":
-            return add_fir(app, request)
-
-        elif request.path == "/update_fir_status" and request.method == "PUT":
-            return update_fir_status(app, request)
-
-        else:
-            response = make_response(jsonify({"error": "Unknown route"}), 404)
-            return response
+        return route_fn(app, request)
 
     except Exception as err:
         logger.error(f"Exception in ksp_intelli_q_function: {err}")
@@ -38,107 +33,183 @@ def handler(request: Request):
 
 
 # ---------------------------------------------------------------------
-# GET /get_current_officer
-# Looks up the logged-in user's officer record by their Catalyst zuid
+# Small helper: run a ZCQL query and return just the row dicts for the
+# named table (ZCQL wraps each row as {"TableName": {...columns...}})
 # ---------------------------------------------------------------------
-def get_current_officer(app):
+def zcql_rows(app, table_name, query):
+    rows = app.zcql().execute_query(query)
+    return [r[table_name] for r in rows]
+
+
+# ---------------------------------------------------------------------
+# GET /get_current_officer
+# Looks up the logged-in user's Employee record by their Catalyst zuid
+# ---------------------------------------------------------------------
+def get_current_officer(app, request):
     user = app.user_management().get_current_user()
     zuid = user.get("user_id") or user.get("zuid")
 
-    query = f"SELECT * FROM Officers WHERE zuid = '{zuid}'"
-    rows = app.zcql().execute_query(query)
-
+    rows = zcql_rows(app, "Employee", f"SELECT * FROM Employee WHERE zuid = '{zuid}'")
     if not rows:
-        return make_response(jsonify({"error": "Officer record not found"}), 404)
+        return make_response(jsonify({"error": "Officer record not found for this login"}), 404)
 
-    return make_response(jsonify({"officer": rows[0]["Officers"]}), 200)
+    emp = rows[0]
+    rank = zcql_rows(app, "Rank", f"SELECT RankName FROM Rank WHERE RankID = '{emp['RankID']}'")
+    unit = zcql_rows(app, "Unit", f"SELECT UnitName FROM Unit WHERE UnitID = '{emp['UnitID']}'")
+
+    officer = {
+        "employee_id": emp["EmployeeID"],
+        "name": emp["FirstName"],
+        "role": rank[0]["RankName"] if rank else "Officer",
+        "station": unit[0]["UnitName"] if unit else "Unassigned",
+        "badge": emp["KGID"],
+    }
+    return make_response(jsonify({"officer": officer}), 200)
+
+
+# ---------------------------------------------------------------------
+# GET /get_lookups
+# Returns every lookup table in one payload so the frontend can build
+# dropdowns and join display names client-side, instead of resolving
+# names to IDs on every search request.
+# ---------------------------------------------------------------------
+def get_lookups(app, request):
+    districts = zcql_rows(app, "District", "SELECT DistrictID, DistrictName FROM District WHERE Active = 1")
+    units = zcql_rows(app, "Unit", "SELECT UnitID, UnitName, DistrictID FROM Unit WHERE Active = 1")
+    crime_heads = zcql_rows(app, "CrimeHead", "SELECT CrimeHeadID, CrimeGroupName FROM CrimeHead WHERE Active = 1")
+    crime_subheads = zcql_rows(app, "CrimeSubHead", "SELECT CrimeSubHeadID, CrimeHeadID, CrimeHeadName FROM CrimeSubHead")
+    statuses = zcql_rows(app, "CaseStatusMaster", "SELECT CaseStatusID, CaseStatusName FROM CaseStatusMaster")
+
+    return make_response(jsonify({
+        "districts": districts,
+        "units": units,
+        "crime_heads": crime_heads,
+        "crime_subheads": crime_subheads,
+        "statuses": statuses,
+    }), 200)
 
 
 # ---------------------------------------------------------------------
 # GET /get_dashboard_stats
 # ---------------------------------------------------------------------
-def get_dashboard_stats(app):
+def get_dashboard_stats(app, request):
     zcql = app.zcql()
 
-    total = zcql.execute_query("SELECT COUNT(fir_id) FROM FIRs")
-    open_firs = zcql.execute_query("SELECT COUNT(fir_id) FROM FIRs WHERE status = 'Open'")
-    solved = zcql.execute_query("SELECT COUNT(fir_id) FROM FIRs WHERE status = 'Closed'")
-    active = zcql.execute_query("SELECT COUNT(fir_id) FROM FIRs WHERE status = 'Under Investigation'")
+    def count(where=""):
+        q = f"SELECT COUNT(CaseMasterID) FROM CaseMaster{(' WHERE ' + where) if where else ''}"
+        rows = zcql.execute_query(q)
+        return rows[0]["CaseMaster"]["CaseMasterID"] if rows else 0
 
     stats = {
-        "totalCrimes": total[0]["FIRs"]["fir_id"] if total else 0,
-        "openFirs": open_firs[0]["FIRs"]["fir_id"] if open_firs else 0,
-        "solved": solved[0]["FIRs"]["fir_id"] if solved else 0,
-        "activeInvestigations": active[0]["FIRs"]["fir_id"] if active else 0,
+        "totalCrimes": count(),
+        "openFirs": count("CaseStatusID = 'STA1'"),
+        "solved": count("CaseStatusID = 'STA3'"),
+        "activeInvestigations": count("CaseStatusID = 'STA1' OR CaseStatusID = 'STA2'"),
     }
     return make_response(jsonify(stats), 200)
 
 
 # ---------------------------------------------------------------------
-# GET /search_fir?crime_type=&district=&status=
+# GET /search_case?district_id=&crime_subhead_id=&status_id=&limit=
+# All filters optional. Filter by IDs (from /get_lookups), not names.
 # ---------------------------------------------------------------------
-def search_fir(app, request):
-    crime_type = (request.args.get("crime_type") or "").strip()
-    district = (request.args.get("district") or "").strip()
-    status = (request.args.get("status") or "").strip()
+def search_case(app, request):
+    district_id = (request.args.get("district_id") or "").strip()
+    crime_subhead_id = (request.args.get("crime_subhead_id") or "").strip()
+    status_id = (request.args.get("status_id") or "").strip()
+    limit = int(request.args.get("limit") or 50)
 
     conditions = []
-    if crime_type:
-        conditions.append(f"crime_type = '{crime_type}'")
-    if district:
-        conditions.append(f"district = '{district}'")
-    if status:
-        conditions.append(f"status = '{status}'")
+
+    # District filter goes through Unit, since CaseMaster only stores PoliceStationID
+    if district_id:
+        unit_rows = zcql_rows(app, "Unit", f"SELECT UnitID FROM Unit WHERE DistrictID = '{district_id}'")
+        unit_ids = [u["UnitID"] for u in unit_rows]
+        if not unit_ids:
+            return make_response(jsonify({"results": [], "count": 0}), 200)
+        in_clause = ", ".join(f"'{u}'" for u in unit_ids)
+        conditions.append(f"PoliceStationID IN ({in_clause})")
+
+    if crime_subhead_id:
+        conditions.append(f"CrimeMinorHeadID = '{crime_subhead_id}'")
+    if status_id:
+        conditions.append(f"CaseStatusID = '{status_id}'")
 
     where_clause = f" WHERE {' AND '.join(conditions)}" if conditions else ""
-    query = f"SELECT * FROM FIRs{where_clause} ORDER BY date_reported DESC LIMIT 50"
+    query = f"SELECT * FROM CaseMaster{where_clause} ORDER BY CrimeRegisteredDate DESC LIMIT {limit}"
+    cases = zcql_rows(app, "CaseMaster", query)
 
-    rows = app.zcql().execute_query(query)
-    results = [row["FIRs"] for row in rows]
-
-    return make_response(jsonify({"results": results, "count": len(results)}), 200)
+    return make_response(jsonify({"results": cases, "count": len(cases)}), 200)
 
 
 # ---------------------------------------------------------------------
-# POST /add_fir
-# Body: { crime_type, location, district, status, investigating_officer, description }
+# POST /add_case
+# Body: { crime_subhead_id, police_station_id, incident_date, latitude,
+#         longitude, brief_facts, police_person_id }
 # ---------------------------------------------------------------------
-def add_fir(app, request):
+def add_case(app, request):
     body = request.get_json(force=True)
 
-    required = ["crime_type", "location", "district"]
+    required = ["crime_subhead_id", "police_station_id", "police_person_id"]
     missing = [f for f in required if not body.get(f)]
     if missing:
         return make_response(jsonify({"error": f"Missing required fields: {', '.join(missing)}"}), 400)
 
+    # Resolve CrimeHeadID from the sub-head, and gravity from that head
+    subhead = zcql_rows(app, "CrimeSubHead",
+        f"SELECT CrimeHeadID FROM CrimeSubHead WHERE CrimeSubHeadID = '{body['crime_subhead_id']}'")
+    if not subhead:
+        return make_response(jsonify({"error": "Unknown crime_subhead_id"}), 400)
+    crime_head_id = subhead[0]["CrimeHeadID"]
+    gravity_id = "GRV1" if crime_head_id in ("CH01", "CH03") else "GRV2"
+
+    # Simple readable ID — in production, fetch the current max and increment instead
+    import time
+    new_id = f"CASE{int(time.time())}"
+
     row_data = {
-        "crime_type": body.get("crime_type"),
-        "location": body.get("location"),
-        "district": body.get("district"),
-        "status": body.get("status", "Open"),
-        "investigating_officer": body.get("investigating_officer", ""),
-        "description": body.get("description", ""),
+        "CaseMasterID": new_id,
+        "CrimeNo": new_id,
+        "CaseNo": new_id,
+        "CrimeRegisteredDate": body.get("incident_date", ""),
+        "PolicePersonID": body["police_person_id"],
+        "PoliceStationID": body["police_station_id"],
+        "CaseCategoryID": "CAT1",
+        "GravityOffenceID": gravity_id,
+        "CrimeMajorHeadID": crime_head_id,
+        "CrimeMinorHeadID": body["crime_subhead_id"],
+        "CaseStatusID": "STA1",
+        "IncidentFromDate": body.get("incident_date", ""),
+        "IncidentToDate": body.get("incident_date", ""),
+        "InfoReceivedPSDate": body.get("incident_date", ""),
+        "latitude": body.get("latitude", 0),
+        "longitude": body.get("longitude", 0),
+        "BriefFacts": body.get("brief_facts", ""),
     }
 
-    table = app.datastore().table("FIRs")
+    table = app.datastore().table("CaseMaster")
     inserted = table.insert_row(row_data)
 
-    return make_response(jsonify({"message": "FIR created", "fir": inserted.get("row")}), 201)
+    return make_response(jsonify({"message": "Case created", "case": inserted.get("row")}), 201)
 
 
 # ---------------------------------------------------------------------
-# PUT /update_fir_status
-# Body: { fir_id, status }
+# PUT /update_case_status
+# Body: { case_master_id, status_id }
 # ---------------------------------------------------------------------
-def update_fir_status(app, request):
+def update_case_status(app, request):
     body = request.get_json(force=True)
 
-    fir_id = body.get("fir_id")
-    new_status = body.get("status")
-    if not fir_id or not new_status:
-        return make_response(jsonify({"error": "fir_id and status are required"}), 400)
+    case_id = body.get("case_master_id")
+    status_id = body.get("status_id")
+    if not case_id or not status_id:
+        return make_response(jsonify({"error": "case_master_id and status_id are required"}), 400)
 
-    table = app.datastore().table("FIRs")
-    updated = table.update_row({"ROWID": fir_id, "status": new_status})
+    rows = zcql_rows(app, "CaseMaster", f"SELECT ROWID FROM CaseMaster WHERE CaseMasterID = '{case_id}'")
+    if not rows:
+        return make_response(jsonify({"error": "Case not found"}), 404)
 
-    return make_response(jsonify({"message": "FIR updated", "fir": updated.get("row")}), 200)
+    table = app.datastore().table("CaseMaster")
+    updated = table.update_row({"ROWID": rows[0]["ROWID"], "CaseStatusID": status_id})
+
+    return make_response(jsonify({"message": "Case updated", "case": updated.get("row")}), 200)

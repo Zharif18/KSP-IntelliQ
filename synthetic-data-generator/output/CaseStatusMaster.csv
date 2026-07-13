@@ -1,0 +1,5 @@
+CaseStatusID,CaseStatusName
+STA1,Under Investigation
+STA2,Charge Sheeted
+STA3,Closed
+STA4,Undetected

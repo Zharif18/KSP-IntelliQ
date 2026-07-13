@@ -1,0 +1,28 @@
+CrimeSubHeadID,CrimeHeadID,CrimeHeadName,SeqID
+CSH0001,CH01,Murder,1
+CSH0002,CH01,Attempt to Murder,2
+CSH0003,CH01,Grievous Hurt,3
+CSH0004,CH01,Assault,4
+CSH0005,CH01,Kidnapping,5
+CSH0006,CH02,Theft,1
+CSH0007,CH02,Vehicle Theft,2
+CSH0008,CH02,Burglary,3
+CSH0009,CH02,Robbery,4
+CSH0010,CH02,Dacoity,5
+CSH0011,CH02,Chain Snatching,6
+CSH0012,CH03,Molestation,1
+CSH0013,CH03,Dowry Death,2
+CSH0014,CH03,Domestic Violence,3
+CSH0015,CH03,Rape,4
+CSH0016,CH03,Eve Teasing,5
+CSH0017,CH04,Cheating,1
+CSH0018,CH04,Forgery,2
+CSH0019,CH04,Criminal Breach of Trust,3
+CSH0020,CH04,Counterfeiting,4
+CSH0021,CH05,Cyber Fraud,1
+CSH0022,CH05,Online Harassment,2
+CSH0023,CH05,Data Theft,3
+CSH0024,CH05,Phishing,4
+CSH0025,CH06,Rioting,1
+CSH0026,CH06,Public Nuisance,2
+CSH0027,CH06,Unlawful Assembly,3
