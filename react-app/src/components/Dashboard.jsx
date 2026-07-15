@@ -8,7 +8,6 @@ import {
 } from "recharts";
 import CrimeMap from "./CrimeMap";
 import FIRManagement from "./FIRManagement";
-import OnboardingLink from "./OnboardingLink";
 import catalyst from "../catalystInit.jsx";
 
 /* ---------------------------------------------------------------------
@@ -93,7 +92,7 @@ export default function KSPIntelliQDashboard() {
   const [theme, setTheme] = useState("dark");
   const [activeTab, setActiveTab] = useState("Dashboard");
   const [officer, setOfficer] = useState(null);
-  const [needsLinking, setNeedsLinking] = useState(false);
+  const [accessDenied, setAccessDenied] = useState(null); // holds the message, or null
   const [stats, setStats] = useState(null);
   const [assistantOpen, setAssistantOpen] = useState(false);
   const [messages, setMessages] = useState([
@@ -105,16 +104,18 @@ export default function KSPIntelliQDashboard() {
 
   const fetchOfficer = () => {
     fetch("/server/ksp_intelli_q_function/get_current_officer", { credentials: "include" })
-      .then((res) => res.json())
-      .then((d) => {
-        if (d.needs_linking) {
-          setNeedsLinking(true);
-        } else {
+      .then(async (res) => {
+        const d = await res.json();
+        if (res.status === 403 && d.error === "not_provisioned") {
+          setAccessDenied(d.message || "This login isn't linked to an officer profile yet.");
+        } else if (res.ok) {
           setOfficer(d.officer);
-          setNeedsLinking(false);
+          setAccessDenied(null);
+        } else {
+          setAccessDenied(d.detail || d.error || `Unexpected error (${res.status})`);
         }
       })
-      .catch((err) => console.warn("get_current_officer failed", err));
+      .catch((err) => setAccessDenied(err.message));
   };
 
   useEffect(() => {
@@ -142,8 +143,23 @@ export default function KSPIntelliQDashboard() {
     }, 500);
   };
 
-  if (needsLinking) {
-    return <OnboardingLink onLinked={fetchOfficer} />;
+  if (accessDenied) {
+    return (
+      <div style={{
+        minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center",
+        justifyContent: "center", gap: 14, background: "#0e1116", color: "#f3f1ea",
+        fontFamily: "'Inter', sans-serif", textAlign: "center", padding: 24,
+      }}>
+        <div style={{ fontSize: 15, fontWeight: 700 }}>Access not set up yet</div>
+        <div style={{ fontSize: 12.5, color: "#a8adba", maxWidth: 360, lineHeight: 1.6 }}>{accessDenied}</div>
+        <button onClick={handleLogout} style={{
+          marginTop: 8, padding: "8px 18px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.1)",
+          background: "#212630", color: "#f3f1ea", fontSize: 12.5, cursor: "pointer",
+        }}>
+          Sign out
+        </button>
+      </div>
+    );
   }
 
   return (

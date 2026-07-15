@@ -19,8 +19,6 @@ def handler(request: Request):
             ("/search_case", "GET"): search_case,
             ("/add_case", "POST"): add_case,
             ("/update_case_status", "PUT"): update_case_status,
-            ("/get_unlinked_employees", "GET"): get_unlinked_employees,
-            ("/link_officer", "POST"): link_officer,
         }
 
         route_fn = routes.get((request.path, request.method))
@@ -31,7 +29,11 @@ def handler(request: Request):
 
     except Exception as err:
         logger.error(f"Exception in ksp_intelli_q_function: {err}")
-        return make_response(jsonify({"error": "Internal server error occurred."}), 500)
+        # Surfacing the real detail so errors are debuggable from the browser
+        # console / network tab without needing to check Catalyst's Logs tab
+        # every time. If this ever ships beyond a hackathon demo, drop
+        # "detail" and log-only instead — it can leak internal info.
+        return make_response(jsonify({"error": "Internal server error occurred.", "detail": str(err)}), 500)
 
 
 # ---------------------------------------------------------------------
@@ -47,8 +49,12 @@ def zcql_rows(app, table_name, query):
 # GET /get_current_officer
 # Looks up the logged-in user's Employee record by their Catalyst zuid.
 # Requires a real signed-in Catalyst session (see LoginPage.jsx).
-# If the signed-in account hasn't been linked to an Employee record yet,
-# returns needs_linking so the frontend can show the onboarding screen.
+#
+# There is no self-service linking here on purpose: an admin sets the
+# zuid column on the matching Employee row manually, in Console > Data
+# Store > Employee, once they've created that person's login in
+# Console > Authentication > Users. Until that's done, this account
+# can sign in but has no officer profile — access is denied cleanly.
 # ---------------------------------------------------------------------
 def get_current_officer(app, request):
     try:
@@ -61,11 +67,9 @@ def get_current_officer(app, request):
 
     if not rows:
         return make_response(jsonify({
-            "officer": None,
-            "needs_linking": True,
-            "zuid": zuid,
-            "email": user.get("email_id") or user.get("email"),
-        }), 200)
+            "error": "not_provisioned",
+            "message": "This login isn't linked to an officer profile yet. Contact your administrator.",
+        }), 403)
 
     emp = rows[0]
     rank = zcql_rows(app, "Rank", f"SELECT RankName FROM Rank WHERE RankID = '{emp['RankID']}'")
@@ -78,55 +82,7 @@ def get_current_officer(app, request):
         "station": unit[0]["UnitName"] if unit else "Unassigned",
         "badge": emp["KGID"],
     }
-    return make_response(jsonify({"officer": officer, "needs_linking": False}), 200)
-
-
-# ---------------------------------------------------------------------
-# GET /get_unlinked_employees
-# Employee records not yet tied to any Catalyst login. Used to populate
-# the "which officer are you?" dropdown on first login.
-# ---------------------------------------------------------------------
-def get_unlinked_employees(app, request):
-    rows = zcql_rows(app, "Employee",
-        "SELECT EmployeeID, FirstName, KGID FROM Employee WHERE zuid IS NULL")
-    return make_response(jsonify({"employees": rows}), 200)
-
-
-# ---------------------------------------------------------------------
-# POST /link_officer
-# Body: { employee_id }
-# Binds the signed-in Catalyst account (by zuid) to an Employee record.
-# One-time step run automatically the first time an officer logs in.
-# ---------------------------------------------------------------------
-def link_officer(app, request):
-    logger = logging.getLogger()
-    try:
-        user = app.user_management().get_current_user()
-    except Exception:
-        return make_response(jsonify({"error": "not_authenticated"}), 401)
-
-    zuid = str(user.get("user_id") or user.get("zuid") or "")
-    body = request.get_json(force=True)
-    employee_id = body.get("employee_id")
-    if not employee_id:
-        return make_response(jsonify({"error": "employee_id is required"}), 400)
-
-    rows = zcql_rows(app, "Employee", f"SELECT ROWID, zuid FROM Employee WHERE EmployeeID = '{employee_id}'")
-    if not rows:
-        return make_response(jsonify({"error": "Unknown employee_id"}), 404)
-    if rows[0].get("zuid"):
-        return make_response(jsonify({"error": "This officer profile is already linked to another account"}), 409)
-
-    try:
-        table = app.datastore().table("Employee")
-        table.update_row({"ROWID": int(rows[0]["ROWID"]), "zuid": zuid})
-    except Exception as err:
-        logger.error(f"link_officer update_row failed: {err}")
-        # TEMP: surfacing the real error to the frontend while we debug.
-        # Remove the "detail" key once this is confirmed working.
-        return make_response(jsonify({"error": "update_row failed", "detail": str(err)}), 500)
-
-    return make_response(jsonify({"message": "Account linked"}), 200)
+    return make_response(jsonify({"officer": officer}), 200)
 
 
 # ---------------------------------------------------------------------
