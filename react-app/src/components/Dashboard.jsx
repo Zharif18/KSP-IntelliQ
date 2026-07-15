@@ -1,13 +1,15 @@
 import { useState, useEffect, useRef } from "react";
 import {
   Shield, FileText, Users, Map, BarChart3, MessageSquare,
-  Search, Bell, Send, Radio, ChevronLeft, Sun, Moon
+  Search, Bell, Send, Radio, ChevronLeft, Sun, Moon, LogOut
 } from "lucide-react";
 import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid
 } from "recharts";
 import CrimeMap from "./CrimeMap";
 import FIRManagement from "./FIRManagement";
+import OnboardingLink from "./OnboardingLink";
+import catalyst from "../catalystInit.jsx";
 
 /* ---------------------------------------------------------------------
    CATALYST INTEGRATION LAYER
@@ -15,12 +17,12 @@ import FIRManagement from "./FIRManagement";
    Falls back to demo data so the UI always renders. Flip USE_MOCK to
    false once your functions are live.
 ------------------------------------------------------------------------ */
-const USE_MOCK = true;
+const USE_MOCK = false;
 
 async function callCatalystFunction(endpoint, fallback) {
   if (USE_MOCK) return fallback;
   try {
-    const res = await fetch(`/server/ksp_backend/${endpoint}`, { credentials: "include" });
+    const res = await fetch(`/server/ksp_intelli_q_function/${endpoint}`, { credentials: "include" });
     if (!res.ok) throw new Error("Function call failed");
     return await res.json();
   } catch (err) {
@@ -91,6 +93,7 @@ export default function KSPIntelliQDashboard() {
   const [theme, setTheme] = useState("dark");
   const [activeTab, setActiveTab] = useState("Dashboard");
   const [officer, setOfficer] = useState(null);
+  const [needsLinking, setNeedsLinking] = useState(false);
   const [stats, setStats] = useState(null);
   const [assistantOpen, setAssistantOpen] = useState(false);
   const [messages, setMessages] = useState([
@@ -100,10 +103,30 @@ export default function KSPIntelliQDashboard() {
   const clock = useLiveClock();
   const scrollRef = useRef(null);
 
+  const fetchOfficer = () => {
+    fetch("/server/ksp_intelli_q_function/get_current_officer", { credentials: "include" })
+      .then((res) => res.json())
+      .then((d) => {
+        if (d.needs_linking) {
+          setNeedsLinking(true);
+        } else {
+          setOfficer(d.officer);
+          setNeedsLinking(false);
+        }
+      })
+      .catch((err) => console.warn("get_current_officer failed", err));
+  };
+
   useEffect(() => {
-    callCatalystFunction("get_current_officer", { officer: MOCK_OFFICER }).then((d) => setOfficer(d.officer));
+    fetchOfficer();
     callCatalystFunction("get_dashboard_stats", MOCK_STATS).then(setStats);
   }, []);
+
+  const handleLogout = () => {
+    if (catalyst && catalyst.auth) {
+      catalyst.auth.signOut(`${window.location.origin}/app/index.html`);
+    }
+  };
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
@@ -118,6 +141,10 @@ export default function KSPIntelliQDashboard() {
       setMessages((m) => [...m, { from: "ai", text: `Searching case files for: "${q}"… (wire this to Gemini via a Catalyst Function to answer live)` }]);
     }, 500);
   };
+
+  if (needsLinking) {
+    return <OnboardingLink onLinked={fetchOfficer} />;
+  }
 
   return (
     <div className={`ksp-dash theme-${theme}`}>
@@ -274,6 +301,7 @@ export default function KSPIntelliQDashboard() {
             {theme === "dark" ? <Sun size={15} /> : <Moon size={15} />}
           </div>
           <div className="icon-btn"><Bell size={15} /></div>
+          <div className="icon-btn" onClick={handleLogout} title="Sign out"><LogOut size={15} /></div>
           {officer && (
             <div className="id-badge">
               <div className="id-photo"><Shield size={13} /></div>

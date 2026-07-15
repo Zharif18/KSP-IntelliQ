@@ -4,48 +4,70 @@ import { Filter, MapPin } from "lucide-react";
 import "leaflet/dist/leaflet.css";
 
 /* ---------------------------------------------------------------------
-   Calls /server/ksp_intelli_q_function/search_fir on your Catalyst
-   backend. Falls back to demo pins so the map always renders.
+   Calls the real backend routes:
+     GET /server/ksp_intelli_q_function/get_lookups   (once, for names)
+     GET /server/ksp_intelli_q_function/search_case?status_id=...
+   CaseMaster rows come back with IDs (CrimeMinorHeadID, CaseStatusID,
+   PoliceStationID) — we resolve those to display names using the
+   lookup tables, same way the rest of the app does.
 ------------------------------------------------------------------------ */
-const USE_MOCK = true;
 
-async function fetchFirs(filters) {
-  if (USE_MOCK) return MOCK_FIRS;
-  try {
-    const params = new URLSearchParams(filters).toString();
-    const res = await fetch(`/server/ksp_intelli_q_function/search_fir?${params}`, { credentials: "include" });
-    const data = await res.json();
-    return data.results || [];
-  } catch (err) {
-    console.warn("search_fir failed, using fallback", err);
-    return MOCK_FIRS;
-  }
+async function fetchJSON(endpoint, opts) {
+  const res = await fetch(`/server/ksp_intelli_q_function/${endpoint}`, {
+    credentials: "include",
+    ...opts,
+  });
+  if (!res.ok) throw new Error(`${endpoint} failed (${res.status})`);
+  return res.json();
 }
 
-// Karnataka / Bengaluru area coordinates for demo pins
-const MOCK_FIRS = [
-  { fir_id: "FIR001", crime_type: "Theft", location: "Whitefield", lat: 12.9698, lng: 77.7500, status: "Open" },
-  { fir_id: "FIR002", crime_type: "Chain Snatching", location: "Indiranagar", lat: 12.9719, lng: 77.6412, status: "Under Investigation" },
-  { fir_id: "FIR003", crime_type: "Burglary", location: "Electronic City", lat: 12.8452, lng: 77.6602, status: "Closed" },
-  { fir_id: "FIR004", crime_type: "Assault", location: "Yeshwanthpur", lat: 13.0284, lng: 77.5546, status: "Open" },
-  { fir_id: "FIR005", crime_type: "Vehicle Theft", location: "Whitefield", lat: 12.9750, lng: 77.7420, status: "Open" },
-  { fir_id: "FIR006", crime_type: "Robbery", location: "Koramangala", lat: 12.9352, lng: 77.6245, status: "Under Investigation" },
-];
-
-const STATUS_COLOR = { Open: "#c17a7a", "Under Investigation": "#d4b073", Closed: "#7fb39c" };
-
 export default function CrimeMap() {
-  const [firs, setFirs] = useState([]);
-  const [statusFilter, setStatusFilter] = useState("");
+  const [lookups, setLookups] = useState(null);
+  const [cases, setCases] = useState([]);
+  const [statusFilter, setStatusFilter] = useState(""); // holds a CaseStatusID, "" = all
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
 
+  // Load lookups once
   useEffect(() => {
+    fetchJSON("get_lookups")
+      .then(setLookups)
+      .catch((err) => setError(err.message));
+  }, []);
+
+  // Load cases whenever the status filter changes (needs lookups first,
+  // just so the filter chips below have names to show)
+  useEffect(() => {
+    if (!lookups) return;
     setLoading(true);
-    fetchFirs(statusFilter ? { status: statusFilter } : {}).then((data) => {
-      setFirs(data);
-      setLoading(false);
-    });
-  }, [statusFilter]);
+    setError(null);
+    const qs = statusFilter ? `?status_id=${encodeURIComponent(statusFilter)}` : "";
+    fetchJSON(`search_case${qs}`)
+      .then((data) => setCases(data.results || []))
+      .catch((err) => setError(err.message))
+      .finally(() => setLoading(false));
+  }, [lookups, statusFilter]);
+
+  if (error) {
+    return (
+      <div className="crime-map-wrap" style={{ padding: 24, color: "#c17a7a" }}>
+        Couldn't load the crime map: {error}. Check that the backend function is deployed
+        and reachable at /server/ksp_intelli_q_function/.
+      </div>
+    );
+  }
+
+  const subheadName = (id) =>
+    lookups?.crime_subheads.find((s) => s.CrimeSubHeadID === id)?.CrimeHeadName || "Unknown";
+  const unitName = (id) => lookups?.units.find((u) => u.UnitID === id)?.UnitName || "Unassigned";
+  const statusName = (id) =>
+    lookups?.statuses.find((s) => s.CaseStatusID === id)?.CaseStatusName || "Unknown";
+
+  const STATUS_COLOR = {}; // filled in below once lookups are in, keyed by status name
+  lookups?.statuses.forEach((s, i) => {
+    const palette = ["#c17a7a", "#d4b073", "#7fb39c", "#8a9bd4"];
+    STATUS_COLOR[s.CaseStatusName] = palette[i % palette.length];
+  });
 
   return (
     <div className="crime-map-wrap">
@@ -58,9 +80,9 @@ export default function CrimeMap() {
           border-radius: 12px; overflow: hidden; border: 1px solid var(--border);
         }
         .map-header { display: flex; align-items: center; justify-content: space-between;
-          padding: 16px 20px; background: var(--panel); border-bottom: 1px solid var(--border); }
+          padding: 16px 20px; background: var(--panel); border-bottom: 1px solid var(--border); flex-wrap: wrap; gap: 10px; }
         .map-title { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 14px; }
-        .filter-row { display: flex; gap: 8px; }
+        .filter-row { display: flex; gap: 8px; flex-wrap: wrap; }
         .filter-chip { padding: 6px 14px; border-radius: 20px; font-size: 11.5px; cursor: pointer;
           border: 1px solid var(--border); background: var(--panel-raised); color: var(--muted); font-weight: 600; }
         .filter-chip.active { background: var(--gold); color: var(--ink); border-color: var(--gold); }
@@ -69,52 +91,64 @@ export default function CrimeMap() {
           border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; font-size: 11px; }
         .legend-row { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
         .legend-dot { width: 8px; height: 8px; border-radius: 50%; }
+        .map-loading { display: flex; align-items: center; justify-content: center; height: 100%; color: var(--muted); font-size: 13px; }
       `}</style>
 
       <div className="map-header">
         <div className="map-title"><MapPin size={15} /> Crime Map — Live FIR Locations</div>
         <div className="filter-row">
           <Filter size={13} color="var(--muted)" style={{ alignSelf: "center", marginRight: 2 }} />
-          {["", "Open", "Under Investigation", "Closed"].map((s) => (
+          <div
+            className={`filter-chip ${statusFilter === "" ? "active" : ""}`}
+            onClick={() => setStatusFilter("")}
+          >
+            All
+          </div>
+          {lookups?.statuses.map((s) => (
             <div
-              key={s || "all"}
-              className={`filter-chip ${statusFilter === s ? "active" : ""}`}
-              onClick={() => setStatusFilter(s)}
+              key={s.CaseStatusID}
+              className={`filter-chip ${statusFilter === s.CaseStatusID ? "active" : ""}`}
+              onClick={() => setStatusFilter(s.CaseStatusID)}
             >
-              {s || "All"}
+              {s.CaseStatusName}
             </div>
           ))}
         </div>
       </div>
 
       <div className="map-body">
-        <MapContainer center={[12.9716, 77.5946]} zoom={11} style={{ height: "100%", width: "100%" }}>
-          <TileLayer
-            url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
-            attribution='&copy; OpenStreetMap &copy; CARTO'
-          />
-          {firs.map((fir) => (
-            <CircleMarker
-              key={fir.fir_id}
-              center={[fir.lat, fir.lng]}
-              radius={9}
-              pathOptions={{
-                color: STATUS_COLOR[fir.status] || "#d4b073",
-                fillColor: STATUS_COLOR[fir.status] || "#d4b073",
-                fillOpacity: 0.6,
-                weight: 2,
-              }}
-            >
-              <Popup>
-                <strong>{fir.fir_id}</strong> — {fir.crime_type}
-                <br />
-                {fir.location}
-                <br />
-                Status: {fir.status}
-              </Popup>
-            </CircleMarker>
-          ))}
-        </MapContainer>
+        {loading || !lookups ? (
+          <div className="map-loading">Loading case locations…</div>
+        ) : (
+          <MapContainer center={[12.9716, 77.5946]} zoom={11} style={{ height: "100%", width: "100%" }}>
+            <TileLayer
+              url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
+              attribution='&copy; OpenStreetMap &copy; CARTO'
+            />
+            {cases
+              .filter((c) => c.latitude && c.longitude)
+              .map((c) => {
+                const status = statusName(c.CaseStatusID);
+                const color = STATUS_COLOR[status] || "#d4b073";
+                return (
+                  <CircleMarker
+                    key={c.CaseMasterID}
+                    center={[c.latitude, c.longitude]}
+                    radius={9}
+                    pathOptions={{ color, fillColor: color, fillOpacity: 0.6, weight: 2 }}
+                  >
+                    <Popup>
+                      <strong>{c.CaseMasterID}</strong> — {subheadName(c.CrimeMinorHeadID)}
+                      <br />
+                      {unitName(c.PoliceStationID)}
+                      <br />
+                      Status: {status}
+                    </Popup>
+                  </CircleMarker>
+                );
+              })}
+          </MapContainer>
+        )}
         <div className="legend">
           <div style={{ fontWeight: 700, marginBottom: 4 }}>Status</div>
           {Object.entries(STATUS_COLOR).map(([label, color]) => (

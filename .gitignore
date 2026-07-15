@@ -1,0 +1,15 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Node / React build
+node_modules/
+build/
+
+# Catalyst / editor
+catalyst-debug.log
+.vscode/
+
+# OS
+.DS_Store

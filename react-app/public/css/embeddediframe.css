@@ -1,0 +1,41 @@
+/* public/css/embeddediframe.css */
+
+/* Reset default margins and clear background inside the iframe */
+body, .auth-container, .za-login-container {
+    background: transparent !important;
+    background-color: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    width: 100% !important;
+    margin: 0 auto !important;
+    padding: 0 !important;
+}
+
+/* Customize form field layouts */
+.form-group input {
+    border-radius: 8px !important;
+    padding: 12px !important;
+}
+
+/* Adjust the primary execution buttons to look modern */
+.btn-primary {
+    background-color: #d4b073 !important; /* Gold accent matching your KSP theme */
+    border-color: #d4b073 !important;
+    color: #0e1116 !important;
+    font-weight: 600 !important;
+    border-radius: 8px !important;
+}
+/* Tighter, cleaner form spacing to match the compact login card */
+.form-group {
+    margin-bottom: 14px !important;
+}
+.btn-primary {
+    width: 100% !important;
+    padding: 11px !important;
+    font-size: 13px !important;
+    margin-top: 6px !important;
+}
+a, .forgot-pwd-link {
+    color: #d4b073 !important;
+    font-size: 12px !important;
+}
