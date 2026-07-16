@@ -8,21 +8,58 @@ import catalyst from "../catalystInit.jsx";
    Requires, in the Catalyst console (Cloud Scale > Authentication):
      1. Native Catalyst Authentication > Embedded Authentication — enabled
      2. Public Signup toggle — ON, if you want people to self-register
-        (this automatically adds a working Sign Up tab with email +
-        password to the same embedded form, no extra code needed)
 
-   The SDK script (loaded in index.html) finishes its own async setup
-   AFTER the script tag runs, so calling catalyst.auth.signIn() on the
-   very first render can fire before it's ready and silently no-op.
-   We poll briefly for catalyst.auth to exist before embedding.
+   THEMING NOTE: the embedded form lives in an iframe served from Zoho's
+   own domain, a different origin from this app. It cannot see this page's
+   CSS variables, so we ship two standalone stylesheets
+   (embeddediframe-dark.css / embeddediframe-light.css) with the same
+   colors hardcoded, and tell Catalyst which one to load via css_url.
+   That URL also has to be ABSOLUTE (window.location.origin + the real
+   deployed path) — a root-relative path like "/css/x.css" resolves
+   against the iframe's own origin, not this app's, and 404s silently,
+   which is why the form was rendering completely unstyled before.
+
+   The SDK script finishes its own async setup AFTER the script tag runs,
+   so calling catalyst.auth.signIn() on the very first render can fire
+   before it's ready and silently no-op. We poll briefly for
+   catalyst.auth to exist before embedding.
 ------------------------------------------------------------------------ */
 
+function getSystemTheme() {
+  if (typeof window !== "undefined" && window.matchMedia) {
+    return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  }
+  return "dark";
+}
+
 export default function LoginPage() {
-  const [theme, setTheme] = useState("dark");
+  const [theme, setTheme] = useState(getSystemTheme);
+  const [manualOverride, setManualOverride] = useState(false);
   const [status, setStatus] = useState("loading"); // loading | ready | timeout
   const embedded = useRef(false);
+  const pollTimer = useRef(null);
 
+  // Auto-follow the OS/browser light-dark setting, unless the person has
+  // clicked the toggle themselves this session.
   useEffect(() => {
+    if (!window.matchMedia) return;
+    const mq = window.matchMedia("(prefers-color-scheme: dark)");
+    const handleChange = (e) => {
+      if (!manualOverride) setTheme(e.matches ? "dark" : "light");
+    };
+    mq.addEventListener("change", handleChange);
+    return () => mq.removeEventListener("change", handleChange);
+  }, [manualOverride]);
+
+  // (Re)embed the Catalyst widget whenever the theme changes, so the
+  // iframe's own stylesheet always matches the current mode.
+  useEffect(() => {
+    const container = document.getElementById("catalyst-login");
+    if (container) container.innerHTML = "";
+    embedded.current = false;
+    setStatus("loading");
+    if (pollTimer.current) clearTimeout(pollTimer.current);
+
     let attempts = 0;
     const maxAttempts = 25; // ~5s at 200ms intervals
 
@@ -31,10 +68,9 @@ export default function LoginPage() {
       if (c && c.auth && typeof c.auth.signIn === "function") {
         if (!embedded.current) {
           embedded.current = true;
-          
-          // CRITICAL: Passing the custom CSS URL to standardizing iframe styling
+
           const config = {
-            css_url: "/css/embeddediframe.css",
+            css_url: `${window.location.origin}/app/css/embeddediframe-${theme}.css`,
             service_url: `${window.location.origin}/app/index.html`,
           };
 
@@ -48,11 +84,20 @@ export default function LoginPage() {
         setStatus("timeout");
         return;
       }
-      setTimeout(tryEmbed, 200);
+      pollTimer.current = setTimeout(tryEmbed, 200);
     };
 
     tryEmbed();
-  }, []);
+    return () => {
+      if (pollTimer.current) clearTimeout(pollTimer.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [theme]);
+
+  const toggleTheme = () => {
+    setManualOverride(true);
+    setTheme((t) => (t === "dark" ? "light" : "dark"));
+  };
 
   return (
     <div className={`login-wrap theme-${theme}`}>
@@ -94,10 +139,11 @@ export default function LoginPage() {
           width: 100% !important;
           height: 300px !important;
           border: none !important;
+          color-scheme: ${theme};
         }
       `}</style>
 
-      <div className="theme-toggle" onClick={() => setTheme(theme === "dark" ? "light" : "dark")} title="Toggle theme">
+      <div className="theme-toggle" onClick={toggleTheme} title="Toggle theme">
         {theme === "dark" ? <Sun size={15} /> : <Moon size={15} />}
       </div>
 
@@ -106,7 +152,7 @@ export default function LoginPage() {
         <div className="login-title">KSP IntelliQ</div>
         <div className="login-sub">Crime Intelligence &amp; Decision Support</div>
       </div>
-        
+
       <div className="login-card">
         {status === "timeout" && (
           <div className="login-status error">

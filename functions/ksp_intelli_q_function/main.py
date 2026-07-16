@@ -59,16 +59,23 @@ def zcql_rows(app, table_name, query):
 def get_current_officer(app, request):
     try:
         user = app.user_management().get_current_user()
-    except Exception:
-        return make_response(jsonify({"error": "not_authenticated"}), 401)
+    except Exception as e:
+        return make_response(jsonify({"error": "not_authenticated", "detail": str(e)}), 401)
 
-    zuid = str(user.get("user_id") or user.get("zuid") or "")
+    raw_user_id = user.get("user_id")
+    raw_zuid = user.get("zuid")
+    zuid = str(raw_user_id or raw_zuid or "")
     rows = zcql_rows(app, "Employee", f"SELECT * FROM Employee WHERE zuid = '{zuid}'")
 
     if not rows:
         return make_response(jsonify({
             "error": "not_provisioned",
             "message": "This login isn't linked to an officer profile yet. Contact your administrator.",
+            # TEMP DEBUG — remove once the mismatch is found:
+            "debug_zuid_used": zuid,
+            "debug_user_id_field": raw_user_id,
+            "debug_zuid_field": raw_zuid,
+            "debug_user_keys": list(user.keys()) if hasattr(user, "keys") else str(type(user)),
         }), 403)
 
     emp = rows[0]

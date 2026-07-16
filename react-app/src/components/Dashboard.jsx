@@ -30,7 +30,6 @@ async function callCatalystFunction(endpoint, fallback) {
   }
 }
 
-const MOCK_OFFICER = { name: "Insp. R. Naik", role: "Inspector", station: "Whitefield PS", badge: "KA-4471" };
 const MOCK_STATS = { totalCrimes: 1284, openFirs: 96, solved: 812, activeInvestigations: 41 };
 const MOCK_TREND = [
   { day: "Mon", crimes: 32 }, { day: "Tue", crimes: 41 }, { day: "Wed", crimes: 28 },
@@ -107,7 +106,8 @@ export default function KSPIntelliQDashboard() {
       .then(async (res) => {
         const d = await res.json();
         if (res.status === 403 && d.error === "not_provisioned") {
-          setAccessDenied(d.message || "This login isn't linked to an officer profile yet.");
+          const debugLine = `\n\n[debug] zuid used: ${JSON.stringify(d.debug_zuid_used)} | user_id field: ${JSON.stringify(d.debug_user_id_field)} | zuid field: ${JSON.stringify(d.debug_zuid_field)} | user keys: ${JSON.stringify(d.debug_user_keys)}`;
+          setAccessDenied((d.message || "This login isn't linked to an officer profile yet. Contact your administrator.") + debugLine);
         } else if (res.ok) {
           setOfficer(d.officer);
           setAccessDenied(null);
@@ -145,19 +145,58 @@ export default function KSPIntelliQDashboard() {
 
   if (accessDenied) {
     return (
-      <div style={{
-        minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center",
-        justifyContent: "center", gap: 14, background: "#0e1116", color: "#f3f1ea",
-        fontFamily: "'Inter', sans-serif", textAlign: "center", padding: 24,
-      }}>
-        <div style={{ fontSize: 15, fontWeight: 700 }}>Access not set up yet</div>
-        <div style={{ fontSize: 12.5, color: "#a8adba", maxWidth: 360, lineHeight: 1.6 }}>{accessDenied}</div>
-        <button onClick={handleLogout} style={{
-          marginTop: 8, padding: "8px 18px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.1)",
-          background: "#212630", color: "#f3f1ea", fontSize: 12.5, cursor: "pointer",
-        }}>
-          Sign out
-        </button>
+      <div className={`access-denied-wrap theme-${theme}`}>
+        <style>{`
+          @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=Inter:wght@400;500;600;700&display=swap');
+
+          .access-denied-wrap {
+            min-height: 100vh; display: flex; flex-direction: column; align-items: center;
+            justify-content: center; font-family: 'Inter', sans-serif; position: relative; padding: 24px;
+          }
+          .access-denied-wrap.theme-dark {
+            --ink: #0e1116; --panel: #171b23; --gold: #d4b073; --gold-strong: #e8c98d;
+            --text: #f3f1ea; --muted: #a8adba; --border: rgba(255,255,255,0.1);
+            background: var(--ink); color: var(--text);
+            background-image: radial-gradient(circle at 85% 0%, rgba(212,176,115,0.07), transparent 50%);
+          }
+          .access-denied-wrap.theme-light {
+            --ink: #f3efe6; --panel: #ffffff; --gold: #93692e; --gold-strong: #7a5624;
+            --text: #201d17; --muted: #5c5749; --border: rgba(32,29,23,0.12);
+            background: var(--ink); color: var(--text);
+            background-image: radial-gradient(circle at 85% 0%, rgba(147,105,46,0.05), transparent 50%);
+          }
+          .access-denied-brand { display: flex; flex-direction: column; align-items: center; gap: 10px; margin-bottom: 28px; }
+          .access-denied-title { font-size: 22px; font-weight: 700; font-family: 'Playfair Display', serif; }
+          .access-denied-sub { color: var(--muted); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; }
+          .access-denied-card {
+            background: var(--panel); border: 1px solid var(--border); border-radius: 16px;
+            padding: 32px 28px; width: 360px; max-width: 90vw; box-sizing: border-box;
+            box-shadow: 0 12px 40px rgba(0,0,0,0.2); display: flex; flex-direction: column;
+            align-items: center; text-align: center; gap: 14px;
+          }
+          .access-denied-heading { font-size: 15px; font-weight: 700; color: var(--text); }
+          .access-denied-message { font-size: 12.5px; color: var(--muted); line-height: 1.6; white-space: pre-line; word-break: break-word; }
+          .access-denied-signout {
+            margin-top: 6px; padding: 10px 22px; border-radius: 8px; border: 1px solid var(--border);
+            background: var(--gold); color: var(--ink); font-weight: 600; font-size: 12.5px;
+            cursor: pointer; transition: background 0.15s;
+          }
+          .access-denied-signout:hover { background: var(--gold-strong); }
+        `}</style>
+
+        <div className="access-denied-brand">
+          <Shield size={32} color="var(--gold-strong)" />
+          <div className="access-denied-title">KSP IntelliQ</div>
+          <div className="access-denied-sub">Crime Intelligence &amp; Decision Support</div>
+        </div>
+
+        <div className="access-denied-card">
+          <div className="access-denied-heading">Access not set up yet</div>
+          <div className="access-denied-message">{accessDenied}</div>
+          <button className="access-denied-signout" onClick={handleLogout}>
+            Sign out
+          </button>
+        </div>
       </div>
     );
   }
