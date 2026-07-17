@@ -11,5 +11,10 @@ build/
 catalyst-debug.log
 .vscode/
 
+# Secrets — never commit function env vars (API keys live here)
+functions/*/catalyst-config.json
+.env
+.env.local
+
 # OS
 .DS_Store

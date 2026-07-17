@@ -1,0 +1,14 @@
+{
+	"deployment": {
+		"name": "ksp_intelli_q_function",
+		"stack": "python_3_9",
+		"type": "advancedio",
+		"env_variables": {
+			"GEMINI_API_KEY": "REPLACE_ME_SET_VIA_CATALYST_CONSOLE",
+			"GEMINI_MODEL": "gemini-2.0-flash"
+		}
+	},
+	"execution": {
+		"main": "main.py"
+	}
+}
