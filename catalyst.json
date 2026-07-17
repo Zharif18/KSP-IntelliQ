@@ -1,8 +1,6 @@
 {
   "functions": {
-    "targets": [
-      "ksp_intelli_q_function"
-    ],
+    "targets": ["ksp_intelli_q_function"],
     "ignore": [],
     "source": "functions"
   },

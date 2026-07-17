@@ -1,4 +1,8 @@
 import logging
+import os
+import json
+import time
+import requests  # type: ignore
 from flask import Request, make_response, jsonify # type: ignore
 import zcatalyst_sdk #type: ignore
 
@@ -20,6 +24,7 @@ def handler(request: Request):
             ("/add_case", "POST"): add_case,
             ("/update_case_status", "PUT"): update_case_status,
             ("/get_network_graph", "GET"): get_network_graph,
+            ("/ai_assistant", "POST"): ai_assistant,
         }
 
         route_fn = routes.get((request.path, request.method))
@@ -99,26 +104,29 @@ def get_current_officer(app, request):
 # dropdowns and join display names client-side, instead of resolving
 # names to IDs on every search request.
 # ---------------------------------------------------------------------
-def get_lookups(app, request):
+def _lookups(app):
     districts = zcql_rows(app, "District", "SELECT DistrictID, DistrictName FROM District WHERE Active = 1")
     units = zcql_rows(app, "Unit", "SELECT UnitID, UnitName, DistrictID FROM Unit WHERE Active = 1")
     crime_heads = zcql_rows(app, "CrimeHead", "SELECT CrimeHeadID, CrimeGroupName FROM CrimeHead WHERE Active = 1")
     crime_subheads = zcql_rows(app, "CrimeSubHead", "SELECT CrimeSubHeadID, CrimeHeadID, CrimeHeadName FROM CrimeSubHead")
     statuses = zcql_rows(app, "CaseStatusMaster", "SELECT CaseStatusID, CaseStatusName FROM CaseStatusMaster")
-
-    return make_response(jsonify({
+    return {
         "districts": districts,
         "units": units,
         "crime_heads": crime_heads,
         "crime_subheads": crime_subheads,
         "statuses": statuses,
-    }), 200)
+    }
+
+
+def get_lookups(app, request):
+    return make_response(jsonify(_lookups(app)), 200)
 
 
 # ---------------------------------------------------------------------
 # GET /get_dashboard_stats
 # ---------------------------------------------------------------------
-def get_dashboard_stats(app, request):
+def _dashboard_stats(app):
     zcql = app.zcql()
 
     def count(where=""):
@@ -126,25 +134,23 @@ def get_dashboard_stats(app, request):
         rows = zcql.execute_query(q)
         return rows[0]["CaseMaster"]["CaseMasterID"] if rows else 0
 
-    stats = {
+    return {
         "totalCrimes": count(),
         "openFirs": count("CaseStatusID = 'STA1'"),
         "solved": count("CaseStatusID = 'STA3'"),
         "activeInvestigations": count("CaseStatusID = 'STA1' OR CaseStatusID = 'STA2'"),
     }
-    return make_response(jsonify(stats), 200)
+
+
+def get_dashboard_stats(app, request):
+    return make_response(jsonify(_dashboard_stats(app)), 200)
 
 
 # ---------------------------------------------------------------------
 # GET /search_case?district_id=&crime_subhead_id=&status_id=&limit=
 # All filters optional. Filter by IDs (from /get_lookups), not names.
 # ---------------------------------------------------------------------
-def search_case(app, request):
-    district_id = (request.args.get("district_id") or "").strip()
-    crime_subhead_id = (request.args.get("crime_subhead_id") or "").strip()
-    status_id = (request.args.get("status_id") or "").strip()
-    limit = int(request.args.get("limit") or 50)
-
+def _search_cases(app, district_id="", crime_subhead_id="", status_id="", limit=50):
     conditions = []
 
     # District filter goes through Unit, since CaseMaster only stores PoliceStationID
@@ -152,7 +158,7 @@ def search_case(app, request):
         unit_rows = zcql_rows(app, "Unit", f"SELECT UnitID FROM Unit WHERE DistrictID = '{district_id}'")
         unit_ids = [u["UnitID"] for u in unit_rows]
         if not unit_ids:
-            return make_response(jsonify({"results": [], "count": 0}), 200)
+            return []
         in_clause = ", ".join(f"'{u}'" for u in unit_ids)
         conditions.append(f"PoliceStationID IN ({in_clause})")
 
@@ -163,8 +169,16 @@ def search_case(app, request):
 
     where_clause = f" WHERE {' AND '.join(conditions)}" if conditions else ""
     query = f"SELECT * FROM CaseMaster{where_clause} ORDER BY CrimeRegisteredDate DESC LIMIT {limit}"
-    cases = zcql_rows(app, "CaseMaster", query)
+    return zcql_rows(app, "CaseMaster", query)
 
+
+def search_case(app, request):
+    district_id = (request.args.get("district_id") or "").strip()
+    crime_subhead_id = (request.args.get("crime_subhead_id") or "").strip()
+    status_id = (request.args.get("status_id") or "").strip()
+    limit = int(request.args.get("limit") or 50)
+
+    cases = _search_cases(app, district_id, crime_subhead_id, status_id, limit)
     return make_response(jsonify({"results": cases, "count": len(cases)}), 200)
 
 
@@ -258,32 +272,23 @@ def update_case_status(app, request):
 # persons we keep (ranked by case count) so the frontend force layout
 # stays smooth.
 # ---------------------------------------------------------------------
-def get_network_graph(app, request):
+def _network_graph(app, district_id="", min_cases=1, limit_persons=120):
     from collections import defaultdict
-
-    district_id = (request.args.get("district_id") or "").strip()
-    min_cases = int(request.args.get("min_cases") or 1)
-    limit_persons = int(request.args.get("limit") or 120)
 
     case_rows = zcql_rows(app, "CaseMaster", "SELECT CaseMasterID, PoliceStationID, CrimeMinorHeadID FROM CaseMaster")
     case_station = {c["CaseMasterID"]: c["PoliceStationID"] for c in case_rows}
     case_crime = {c["CaseMasterID"]: c.get("CrimeMinorHeadID") for c in case_rows}
 
-    case_filter_ids = None
-    if district_id:
-        unit_rows = zcql_rows(app, "Unit", f"SELECT UnitID FROM Unit WHERE DistrictID = '{district_id}'")
-        unit_ids = {u["UnitID"] for u in unit_rows}
-        case_filter_ids = {cid for cid, station in case_station.items() if station in unit_ids}
-
     accused_rows = zcql_rows(app, "Accused", "SELECT AccusedMasterID, CaseMasterID, AccusedName, PersonKey FROM Accused")
-    if case_filter_ids is not None:
-        accused_rows = [a for a in accused_rows if a["CaseMasterID"] in case_filter_ids]
 
     unit_name = {u["UnitID"]: u["UnitName"] for u in zcql_rows(app, "Unit", "SELECT UnitID, UnitName FROM Unit")}
     subhead_name = {s["CrimeSubHeadID"]: s["CrimeHeadName"]
                      for s in zcql_rows(app, "CrimeSubHead", "SELECT CrimeSubHeadID, CrimeHeadName FROM CrimeSubHead")}
 
-    persons = defaultdict(list)          # PersonKey -> [{caseId, name}, ...]
+    # Build every person's FULL case history first, across all districts —
+    # repeat-offender status and MO are properties of the person, not of
+    # whichever district happens to be filtered.
+    persons = defaultdict(list)          # PersonKey -> [{caseId, name}, ...]  (all districts)
     cases_to_persons = defaultdict(list) # CaseMasterID -> [PersonKey, ...]
 
     for a in accused_rows:
@@ -291,14 +296,30 @@ def get_network_graph(app, request):
         persons[pk].append({"caseId": a["CaseMasterID"], "name": a["AccusedName"]})
         cases_to_persons[a["CaseMasterID"]].append(pk)
 
-    focus = [pk for pk, cs in persons.items() if len(cs) >= min_cases]
+    # district_id only decides WHO is relevant (anyone with >=1 case there),
+    # never how many of their cases "count" toward being a repeat offender.
+    district_case_ids = None
+    if district_id:
+        unit_rows = zcql_rows(app, "Unit", f"SELECT UnitID FROM Unit WHERE DistrictID = '{district_id}'")
+        unit_ids = {u["UnitID"] for u in unit_rows}
+        district_case_ids = {cid for cid, station in case_station.items() if station in unit_ids}
+
+    def touches_district(pk):
+        return district_case_ids is None or any(e["caseId"] in district_case_ids for e in persons[pk])
+
+    focus = [pk for pk, cs in persons.items() if len(cs) >= min_cases and touches_district(pk)]
     focus.sort(key=lambda pk: -len(persons[pk]))
     focus_set = set(focus[:limit_persons])
 
+    # Pull in co-accused too, but only via cases relevant to the district
+    # filter (if any) — keeps the graph visually focused on that district's
+    # incidents while each node still reports the person's true full record.
     included = set(focus_set)
     for pk in focus_set:
-        for entry in persons[pk]:
-            included.update(cases_to_persons[entry["caseId"]])
+        relevant_cases = [e["caseId"] for e in persons[pk]
+                           if district_case_ids is None or e["caseId"] in district_case_ids]
+        for cid in relevant_cases:
+            included.update(cases_to_persons[cid])
 
     nodes = []
     for pk in included:
@@ -338,4 +359,203 @@ def get_network_graph(app, request):
 
     edges = [{"source": a, "target": b, "type": t, "weight": w} for (a, b, t), w in edge_weight.items()]
 
-    return make_response(jsonify({"nodes": nodes, "edges": edges}), 200)
+    return {"nodes": nodes, "edges": edges}
+
+
+def get_network_graph(app, request):
+    district_id = (request.args.get("district_id") or "").strip()
+    min_cases = int(request.args.get("min_cases") or 1)
+    limit_persons = int(request.args.get("limit") or 120)
+    return make_response(jsonify(_network_graph(app, district_id, min_cases, limit_persons)), 200)
+
+
+# ---------------------------------------------------------------------
+# POST /ai_assistant
+# Body: { message: str, history: [{role: "user"|"model", text: str}, ...] }
+#
+# A retrieval-then-generate assistant, not a free-floating chatbot:
+#   1. We scan the message for a known district name / crime type / an
+#      intent (network, hotspot, case-status) and pull the matching
+#      LIVE rows using the same helpers the REST routes use above.
+#   2. That real data — never invented — is handed to Gemini as
+#      grounding context, along with an instruction to answer only
+#      from it and say so plainly if the context doesn't cover the
+#      question.
+#   3. The model may end its answer with a hidden ACTION line telling
+#      the frontend which tab/filter to jump to; we strip that out of
+#      the displayed reply and return it separately as `action`.
+#
+# Requires a GEMINI_API_KEY environment variable set on this function
+# (Catalyst Console > Functions > ksp_intelli_q_function > Environment
+# Variables). Without it, this still responds — just without live AI —
+# so the UI never hard-fails.
+# ---------------------------------------------------------------------
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+GEMINI_URL_TEMPLATE = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+
+SYSTEM_PROMPT = """You are IntelliQ, an AI assistant embedded in the Karnataka State Police \
+crime-intelligence platform, used by SCRB analysts and station officers. \
+You will be given a CONTEXT block of real, live data pulled from the police records \
+system for this specific question, plus the analyst's question. \
+Rules:
+- Answer ONLY using facts present in CONTEXT. Never invent case numbers, names, or statistics.
+- If CONTEXT doesn't contain what's asked, say so plainly and suggest what to search instead.
+- Keep answers under 100 words, professional, no bullet spam, plain prose.
+- If pointing the analyst to a screen would help, end your reply on its own new line with:
+  ACTION: {"tab": "Network"|"Crime Map"|"Cases"|"Dashboard"}
+  Only include ACTION when genuinely useful, and it must be the last line, valid JSON, nothing after it."""
+
+
+def _detect_district(message, districts):
+    msg_low = message.lower()
+    for d in districts:
+        if d["DistrictName"].lower() in msg_low:
+            return d["DistrictID"], d["DistrictName"]
+    return "", ""
+
+
+def _detect_crime_subhead(message, crime_subheads):
+    msg_low = message.lower()
+    for s in crime_subheads:
+        name = (s.get("CrimeHeadName") or "")
+        if name and name.lower() in msg_low:
+            return s["CrimeSubHeadID"], name
+    return "", ""
+
+
+def _build_assistant_context(app, message):
+    msg_low = message.lower()
+    lookups = _lookups(app)
+    district_id, district_name = _detect_district(message, lookups["districts"])
+    subhead_id, subhead_name = _detect_crime_subhead(message, lookups["crime_subheads"])
+
+    context = {"dashboardStats": _dashboard_stats(app)}
+    suggested_tab = None
+
+    network_kw = ["network", "repeat offender", "connection", "linked", "gang", "associat", "co-accused", "coaccused", "ring"]
+    map_kw = ["hotspot", "map", "cluster", "where"]
+
+    if any(k in msg_low for k in network_kw) or district_id:
+        graph = _network_graph(app, district_id=district_id, min_cases=2, limit_persons=8)
+        top_persons = sorted(
+            [n for n in graph["nodes"] if n["type"] == "person"],
+            key=lambda n: -n["caseCount"],
+        )[:5]
+        context["topRepeatOffenders"] = [
+            {"name": p["label"], "caseCount": p["caseCount"], "stations": p["stations"], "crimeTypes": p["crimeTypes"]}
+            for p in top_persons
+        ]
+        suggested_tab = "Network"
+
+    if any(k in msg_low for k in map_kw):
+        suggested_tab = suggested_tab or "Crime Map"
+
+    if district_id or subhead_id or "case" in msg_low or "fir" in msg_low or "status" in msg_low:
+        cases = _search_cases(app, district_id=district_id, crime_subhead_id=subhead_id, limit=5)
+        context["recentMatchingCases"] = [
+            {
+                "caseNo": c.get("CaseNo"),
+                "date": c.get("CrimeRegisteredDate"),
+                "status": c.get("CaseStatusID"),
+                "station": c.get("PoliceStationID"),
+            }
+            for c in cases
+        ]
+        if district_id:
+            context["filteredOnDistrict"] = district_name
+        if subhead_id:
+            context["filteredOnCrimeType"] = subhead_name
+        suggested_tab = suggested_tab or "Cases"
+
+    return context, suggested_tab
+
+
+def ai_assistant(app, request):
+    body = request.get_json(force=True) or {}
+    message = (body.get("message") or "").strip()
+    history = body.get("history") or []
+
+    if not message:
+        return make_response(jsonify({"error": "message is required"}), 400)
+
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        return make_response(jsonify({
+            "reply": "The AI assistant isn't configured yet — an admin needs to set GEMINI_API_KEY "
+                     "in Catalyst Console \u2192 Functions \u2192 ksp_intelli_q_function \u2192 Environment Variables.",
+            "action": None,
+        }), 200)
+
+    try:
+        context, suggested_tab = _build_assistant_context(app, message)
+    except Exception as e:
+        context, suggested_tab = {"error": f"context lookup failed: {e}"}, None
+
+    # Gemini has no "system" role inside contents — the system prompt goes in
+    # its own top-level systemInstruction field instead. Roles here are
+    # "user" / "model" (Groq/OpenAI used "user" / "assistant").
+    contents = []
+    for turn in history[-6:]:
+        role = "model" if turn.get("role") in ("ai", "model", "assistant") else "user"
+        text = (turn.get("text") or "").strip()
+        if text:
+            contents.append({"role": role, "parts": [{"text": text}]})
+
+    contents.append({
+        "role": "user",
+        "parts": [{"text": f"CONTEXT (live data, current as of now):\n{json.dumps(context)}\n\nQuestion: {message}"}],
+    })
+
+    payload = {
+        "contents": contents,
+        "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
+        "generationConfig": {"temperature": 0.3, "maxOutputTokens": 400},
+    }
+
+    gemini_url = GEMINI_URL_TEMPLATE.format(model=GEMINI_MODEL)
+
+    try:
+        resp = None
+        for attempt in range(3):
+            resp = requests.post(
+                gemini_url,
+                headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
+                json=payload,
+                timeout=15,
+            )
+            if resp.status_code != 429:
+                break
+            time.sleep(1.5 * (attempt + 1))  # brief backoff, then retry once/twice more
+        resp.raise_for_status()
+        data = resp.json()
+        raw_text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+    except requests.exceptions.HTTPError as e:
+        if e.response is not None and e.response.status_code == 429:
+            return make_response(jsonify({
+                "reply": "IntelliQ is getting a lot of requests right now — give it about a minute and ask again.",
+                "action": None,
+                "detail": str(e),
+            }), 200)
+        return make_response(jsonify({
+            "reply": "Couldn't reach the AI model just now. Try again in a moment.",
+            "action": None,
+            "detail": str(e),
+        }), 200)
+    except Exception as e:
+        return make_response(jsonify({
+            "reply": "Couldn't reach the AI model just now. Try again in a moment.",
+            "action": None,
+            "detail": str(e),
+        }), 200)
+
+    action = None
+    reply = raw_text
+    if "ACTION:" in raw_text:
+        reply_part, _, action_part = raw_text.rpartition("ACTION:")
+        reply = reply_part.strip()
+        try:
+            action = json.loads(action_part.strip())
+        except (ValueError, json.JSONDecodeError):
+            action = {"tab": suggested_tab} if suggested_tab else None
+
+    return make_response(jsonify({"reply": reply or raw_text, "action": action}), 200)

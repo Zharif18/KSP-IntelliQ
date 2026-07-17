@@ -100,6 +100,7 @@ export default function KSPIntelliQDashboard() {
     { from: "ai", text: "IntelliQ Assistant ready. Ask about a FIR, area, or suspect." },
   ]);
   const [input, setInput] = useState("");
+  const [assistantThinking, setAssistantThinking] = useState(false);
   const clock = useLiveClock();
   const scrollRef = useRef(null);
 
@@ -136,13 +137,33 @@ export default function KSPIntelliQDashboard() {
   }, [messages]);
 
   const sendMessage = () => {
-    if (!input.trim()) return;
+    if (!input.trim() || assistantThinking) return;
     const q = input.trim();
+    const historyForApi = messages
+      .filter((m) => m.from === "user" || m.from === "ai")
+      .slice(-6)
+      .map((m) => ({ role: m.from === "user" ? "user" : "model", text: m.text }));
+
     setMessages((m) => [...m, { from: "user", text: q }]);
     setInput("");
-    setTimeout(() => {
-      setMessages((m) => [...m, { from: "ai", text: `Searching case files for: "${q}"… (wire this to Gemini via a Catalyst Function to answer live)` }]);
-    }, 500);
+    setAssistantThinking(true);
+
+    fetch("/server/ksp_intelli_q_function/ai_assistant", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: q, history: historyForApi }),
+    })
+      .then(async (res) => {
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
+        setMessages((m) => [...m, { from: "ai", text: data.reply || "No response from the assistant." }]);
+        if (data.action?.tab) setActiveTab(data.action.tab);
+      })
+      .catch((err) => {
+        setMessages((m) => [...m, { from: "ai", text: `Couldn't reach the assistant: ${err.message}` }]);
+      })
+      .finally(() => setAssistantThinking(false));
   };
 
   if (accessDenied) {
@@ -331,6 +352,10 @@ export default function KSPIntelliQDashboard() {
         .msg { font-size: 12.5px; max-width: 88%; padding: 10px 12px; border-radius: 10px; line-height: 1.45; color: var(--text); }
         .msg.ai { background: var(--panel-raised); align-self: flex-start; }
         .msg.user { background: rgba(212,176,115,0.16); align-self: flex-end; }
+        .msg-thinking { color: var(--muted); font-style: italic; animation: pulse-thinking 1.4s ease-in-out infinite; }
+        @keyframes pulse-thinking { 0%, 100% { opacity: 0.5; } 50% { opacity: 1; } }
+        .assist-input:disabled { opacity: 0.6; cursor: not-allowed; }
+        .assist-send:disabled { opacity: 0.5; cursor: not-allowed; }
         .assist-input-row { display: flex; gap: 8px; padding: 14px; border-top: 1px solid var(--border); }
         .assist-input { flex: 1; background: var(--panel-raised); border: 1px solid var(--border); border-radius: 8px;
           padding: 10px 12px; font-size: 12.5px; color: var(--text); outline: none; }
@@ -487,16 +512,18 @@ export default function KSPIntelliQDashboard() {
           </div>
           <div className="assist-messages" ref={scrollRef}>
             {messages.map((m, i) => <div key={i} className={`msg ${m.from}`}>{m.text}</div>)}
+            {assistantThinking && <div className="msg ai msg-thinking">IntelliQ is thinking…</div>}
           </div>
           <div className="assist-input-row">
             <input
               className="assist-input"
               placeholder="Ask about a FIR, area, or suspect…"
               value={input}
+              disabled={assistantThinking}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && sendMessage()}
             />
-            <button className="assist-send" onClick={sendMessage}><Send size={14} /></button>
+            <button className="assist-send" onClick={sendMessage} disabled={assistantThinking}><Send size={14} /></button>
           </div>
         </div>
       )}
