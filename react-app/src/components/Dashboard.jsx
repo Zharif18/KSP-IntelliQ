@@ -1,13 +1,14 @@
 import { useState, useEffect, useRef } from "react";
 import {
   Shield, FileText, Users, Map, BarChart3, MessageSquare,
-  Search, Bell, Send, Radio, ChevronLeft, Sun, Moon, LogOut
+  Search, Bell, Send, Radio, ChevronLeft, Sun, Moon, LogOut, Share2
 } from "lucide-react";
 import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid
 } from "recharts";
 import CrimeMap from "./CrimeMap";
 import FIRManagement from "./FIRManagement";
+import NetworkGraph from "./NetworkGraph";
 import catalyst from "../catalystInit.jsx";
 
 /* ---------------------------------------------------------------------
@@ -52,6 +53,7 @@ const MOCK_LOG = [
 const TABS = [
   { icon: BarChart3, label: "Dashboard" },
   { icon: Map, label: "Crime Map" },
+  { icon: Share2, label: "Network" },
   { icon: FileText, label: "Cases" },
   { icon: Users, label: "Officers" },
   { icon: Search, label: "Reports" },
@@ -383,6 +385,8 @@ export default function KSPIntelliQDashboard() {
       <div className="main">
         {activeTab === "Crime Map" ? (
           <CrimeMap />
+        ) : activeTab === "Network" ? (
+          <NetworkGraph />
         ) : activeTab === "Cases" ? (
           <FIRManagement />
         ) : activeTab !== "Dashboard" ? (

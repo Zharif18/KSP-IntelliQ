@@ -19,6 +19,7 @@ def handler(request: Request):
             ("/search_case", "GET"): search_case,
             ("/add_case", "POST"): add_case,
             ("/update_case_status", "PUT"): update_case_status,
+            ("/get_network_graph", "GET"): get_network_graph,
         }
 
         route_fn = routes.get((request.path, request.method))
@@ -238,3 +239,103 @@ def update_case_status(app, request):
     updated = table.update_row({"ROWID": rows[0]["ROWID"], "CaseStatusID": status_id})
 
     return make_response(jsonify({"message": "Case updated", "case": updated.get("row")}), 200)
+
+
+# ---------------------------------------------------------------------
+# GET /get_network_graph?district_id=&min_cases=&limit=
+#
+# Builds the criminal link-analysis graph: nodes are accused persons
+# (grouped by the real-identity PersonKey, since one person can have
+# several AccusedMasterID rows across cases/aliases) and police
+# stations; edges are:
+#   - "co-accused"  — two persons named on the same CaseMasterID
+#   - "location"    — a person's case tied to a PoliceStationID
+#
+# min_cases filters which persons count as the graph's "focus" set
+# (default 1 = everyone). We always pull in anyone co-accused with a
+# focus person too, so a single repeat offender's whole ring shows up
+# even if their associates only appear once. limit caps how many focus
+# persons we keep (ranked by case count) so the frontend force layout
+# stays smooth.
+# ---------------------------------------------------------------------
+def get_network_graph(app, request):
+    from collections import defaultdict
+
+    district_id = (request.args.get("district_id") or "").strip()
+    min_cases = int(request.args.get("min_cases") or 1)
+    limit_persons = int(request.args.get("limit") or 120)
+
+    case_rows = zcql_rows(app, "CaseMaster", "SELECT CaseMasterID, PoliceStationID, CrimeMinorHeadID FROM CaseMaster")
+    case_station = {c["CaseMasterID"]: c["PoliceStationID"] for c in case_rows}
+    case_crime = {c["CaseMasterID"]: c.get("CrimeMinorHeadID") for c in case_rows}
+
+    case_filter_ids = None
+    if district_id:
+        unit_rows = zcql_rows(app, "Unit", f"SELECT UnitID FROM Unit WHERE DistrictID = '{district_id}'")
+        unit_ids = {u["UnitID"] for u in unit_rows}
+        case_filter_ids = {cid for cid, station in case_station.items() if station in unit_ids}
+
+    accused_rows = zcql_rows(app, "Accused", "SELECT AccusedMasterID, CaseMasterID, AccusedName, PersonKey FROM Accused")
+    if case_filter_ids is not None:
+        accused_rows = [a for a in accused_rows if a["CaseMasterID"] in case_filter_ids]
+
+    unit_name = {u["UnitID"]: u["UnitName"] for u in zcql_rows(app, "Unit", "SELECT UnitID, UnitName FROM Unit")}
+    subhead_name = {s["CrimeSubHeadID"]: s["CrimeHeadName"]
+                     for s in zcql_rows(app, "CrimeSubHead", "SELECT CrimeSubHeadID, CrimeHeadName FROM CrimeSubHead")}
+
+    persons = defaultdict(list)          # PersonKey -> [{caseId, name}, ...]
+    cases_to_persons = defaultdict(list) # CaseMasterID -> [PersonKey, ...]
+
+    for a in accused_rows:
+        pk = a["PersonKey"]
+        persons[pk].append({"caseId": a["CaseMasterID"], "name": a["AccusedName"]})
+        cases_to_persons[a["CaseMasterID"]].append(pk)
+
+    focus = [pk for pk, cs in persons.items() if len(cs) >= min_cases]
+    focus.sort(key=lambda pk: -len(persons[pk]))
+    focus_set = set(focus[:limit_persons])
+
+    included = set(focus_set)
+    for pk in focus_set:
+        for entry in persons[pk]:
+            included.update(cases_to_persons[entry["caseId"]])
+
+    nodes = []
+    for pk in included:
+        entries = persons[pk]
+        stations = {case_station.get(e["caseId"]) for e in entries if case_station.get(e["caseId"])}
+        crimes = {subhead_name.get(case_crime.get(e["caseId"])) for e in entries if case_crime.get(e["caseId"])}
+        nodes.append({
+            "id": pk,
+            "type": "person",
+            "label": entries[-1]["name"],
+            "caseCount": len(entries),
+            "repeatOffender": len(entries) >= 2,
+            "stations": sorted({unit_name.get(s, s) for s in stations if s}),
+            "crimeTypes": sorted({c for c in crimes if c}),
+        })
+
+    location_ids = {case_station[e["caseId"]] for pk in included for e in persons[pk] if case_station.get(e["caseId"])}
+    for loc in location_ids:
+        nodes.append({"id": f"loc::{loc}", "type": "location", "label": unit_name.get(loc, loc)})
+
+    edge_weight = defaultdict(int)  # (nodeA, nodeB, type) -> weight, nodeA < nodeB
+    def bump(a, b, etype):
+        key = (a, b, etype) if a < b else (b, a, etype)
+        edge_weight[key] += 1
+
+    for pk in included:
+        for e in persons[pk]:
+            station = case_station.get(e["caseId"])
+            if station:
+                bump(pk, f"loc::{station}", "location")
+
+    for pks in cases_to_persons.values():
+        pks_in = sorted({p for p in pks if p in included})
+        for i in range(len(pks_in)):
+            for j in range(i + 1, len(pks_in)):
+                bump(pks_in[i], pks_in[j], "co-accused")
+
+    edges = [{"source": a, "target": b, "type": t, "weight": w} for (a, b, t), w in edge_weight.items()]
+
+    return make_response(jsonify({"nodes": nodes, "edges": edges}), 200)
