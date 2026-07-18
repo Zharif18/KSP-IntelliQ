@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import {
   Shield, FileText, Users, Map, BarChart3, MessageSquare,
-  Search, Bell, Send, Radio, ChevronLeft, Sun, Moon, LogOut, Share2
+  Search, Bell, Send, Radio, ChevronLeft, Sun, Moon, LogOut, Share2, ShieldAlert
 } from "lucide-react";
 import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid
@@ -9,7 +9,48 @@ import {
 import CrimeMap from "./CrimeMap";
 import FIRManagement from "./FIRManagement";
 import NetworkGraph from "./NetworkGraph";
+import Officers from "./Officers";
+import Reports from "./Reports";
+import AuditLog from "./AuditLog";
 import catalyst from "../catalystInit.jsx";
+
+/* ---------------------------------------------------------------------
+   RBAC tab visibility — every tab still exists for every role; what
+   changes is which ones a given accessRole is offered, mirroring the
+   backend's own scoping so the UI never dangles a tab that the API
+   would just 403 on anyway.
+
+   accessRole values come from get_current_officer's "accessRole" field
+   (Constable / SHO / SP / SCRB Analyst / Unassigned — see main.py).
+   "Unassigned" (no RoleID set yet by an admin) gets the same minimal
+   set a Constable gets: fail-safe, not fail-open.
+------------------------------------------------------------------------ */
+const ALL_TABS = [
+  { icon: BarChart3, label: "Dashboard" },
+  { icon: Map, label: "Crime Map" },
+  { icon: Share2, label: "Network" },
+  { icon: FileText, label: "Cases" },
+  { icon: Users, label: "Officers" },
+  { icon: Search, label: "Reports" },
+  { icon: ShieldAlert, label: "Audit Log" },
+];
+
+function tabsForRole(accessRole) {
+  const hidden = new Set();
+  if (accessRole === "SCRB Analyst") {
+    // Statewide aggregates + NCRB export live here; no personnel roster
+    // and no live map/case-by-case work (that's field-role territory).
+    hidden.add("Officers");
+    hidden.add("Crime Map");
+  } else {
+    // Field roles (Constable / SHO / SP) don't get the cross-district
+    // Audit Log tab unless the backend itself would let them in —
+    // SP and above (DISTRICT/STATE scope). Keeping this in sync with
+    // get_audit_log's _require_scope_at_least("DISTRICT") check.
+    if (accessRole !== "SP") hidden.add("Audit Log");
+  }
+  return ALL_TABS.filter((t) => !hidden.has(t.label));
+}
 
 /* ---------------------------------------------------------------------
    CATALYST INTEGRATION LAYER
@@ -48,15 +89,6 @@ const MOCK_LOG = [
   { time: "13:41", text: "Patrol unit 12 dispatched — Electronic City" },
   { time: "12:20", text: "New evidence uploaded to FIR #1402" },
   { time: "11:05", text: "Hotspot forecast refreshed — 6 zones updated" },
-];
-
-const TABS = [
-  { icon: BarChart3, label: "Dashboard" },
-  { icon: Map, label: "Crime Map" },
-  { icon: Share2, label: "Network" },
-  { icon: FileText, label: "Cases" },
-  { icon: Users, label: "Officers" },
-  { icon: Search, label: "Reports" },
 ];
 
 function useLiveClock() {
@@ -389,7 +421,12 @@ export default function KSPIntelliQDashboard() {
               <div className="id-photo"><Shield size={13} /></div>
               <div>
                 <div className="id-name">{officer.name}</div>
-                <div className="id-role">{officer.role} · {officer.station}</div>
+                <div className="id-role">
+                  {officer.role} · {officer.station}
+                  {officer.accessRole && officer.accessRole !== "Unassigned" && (
+                    <> · <span title="RBAC access tier">{officer.accessRole}</span></>
+                  )}
+                </div>
                 <div className="id-badge-no mono">{officer.badge}</div>
               </div>
             </div>
@@ -397,9 +434,11 @@ export default function KSPIntelliQDashboard() {
         </div>
       </div>
 
-      {/* FOLDER TABS */}
+      {/* FOLDER TABS — filtered by the signed-in officer's RBAC accessRole.
+          Before the officer profile loads, show the full-privilege set
+          briefly rather than flashing a restricted set then expanding it. */}
       <div className="tab-row">
-        {TABS.map(({ icon: Icon, label }) => (
+        {(officer ? tabsForRole(officer.accessRole) : ALL_TABS).map(({ icon: Icon, label }) => (
           <div key={label} className={`tab ${activeTab === label ? "active" : ""}`} onClick={() => setActiveTab(label)}>
             <Icon size={13} /> {label}
           </div>
@@ -414,6 +453,12 @@ export default function KSPIntelliQDashboard() {
           <NetworkGraph />
         ) : activeTab === "Cases" ? (
           <FIRManagement />
+        ) : activeTab === "Officers" ? (
+          <Officers />
+        ) : activeTab === "Reports" ? (
+          <Reports />
+        ) : activeTab === "Audit Log" ? (
+          <AuditLog />
         ) : activeTab !== "Dashboard" ? (
           <div style={{ padding: 40, textAlign: "center", color: "var(--muted)" }}>
             {activeTab} module — build this next.

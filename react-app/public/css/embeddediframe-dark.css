@@ -1435,28 +1435,59 @@
    Only the rules below are ours.
    ======================================================================= */
 
-body {
+html, body {
   font-family: 'Inter', 'Roboto', sans-serif !important;
-  background: transparent !important;
+  background-color: #171b23 !important;
+  background-image: none !important;
+  height: auto !important;
+  min-height: 0 !important;
+}
+
+/* Safety net: force every generic container to the panel color instead of
+   relying on "transparent" (which only looks right if EVERY ancestor,
+   including ones outside our control, is also transparent — one solid
+   white div anywhere in the chain and the whole thing looks white again).
+   Class/ID-selector rules below (.textbox, .btn.blue, #captcha, etc.) all
+   have higher specificity than these plain-tag selectors, so they still
+   win and stay visually distinct from this base panel color. */
+div, section, form, table, tbody, tr, td {
+  background-color: #171b23 !important;
+  background-image: none !important;
 }
 
 .bg_one { display: none !important; }
 
+/* Zoho's default two-column layout (.signin_box + .rightside_box) is only
+   meant for flows with a secondary panel (QR / social sign-in). We only use
+   the single form column, so the right column is hidden outright rather
+   than left as a stray white block. */
+.rightside_box { display: none !important; }
+
 .signin_container {
   width: 100% !important;
   min-height: 0 !important;
-  background: transparent !important;
+  height: auto !important;
+  background-color: #171b23 !important;
   box-shadow: none !important;
   margin: 0 !important;
+  overflow: visible !important;
 }
 
 .signin_box {
   width: 100% !important;
   min-height: 0 !important;
-  background: transparent !important;
+  height: auto !important;
+  background-color: #171b23 !important;
   border-right: none !important;
   padding: 0 !important;
   box-sizing: border-box !important;
+  float: none !important;
+  display: block !important;
+  /* The widget's own overflow-y: auto is what was clipping taller steps
+     into a scrollable window and reading as a blank/scrolling box.
+     The iframe itself is now sized to fit content, so this box no longer
+     needs to scroll internally. */
+  overflow-y: visible !important;
 }
 
 .signin_head, .titlename {
@@ -1470,15 +1501,16 @@ body {
 }
 
 .textbox, #verify_totp {
-  background: #212630 !important;
-  border: 1px solid rgba(255,255,255,0.1) !important;
+  background-color: #262c38 !important;
+  border: 1px solid rgba(255,255,255,0.16) !important;
   color: #f3f1ea !important;
   border-radius: 8px !important;
   caret-color: #d4b073 !important;
 }
-.textbox::placeholder { color: #6f7684 !important; }
+.textbox::placeholder { color: #8a91a3 !important; }
 .textbox:focus, #verify_totp:focus {
   border-color: #d4b073 !important;
+  box-shadow: 0 0 0 1px rgba(212,176,115,0.35) !important;
 }
 
 .btn.blue {

@@ -126,19 +126,28 @@ export default function LoginPage() {
         .login-sub { color: var(--muted); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; }
         .login-card { background: var(--panel); border: 1px solid var(--border); border-radius: 16px;
           padding: 28px; width: 360px; max-width: 90vw; min-height: 340px; box-sizing: border-box;
-          box-shadow: 0 12px 40px rgba(0,0,0,0.2); display: flex; flex-direction: column; align-items: center; justify-content: center; }
+          box-shadow: 0 12px 40px rgba(0,0,0,0.2); display: flex; flex-direction: column; align-items: center; justify-content: center;
+          overflow: visible; }
         .login-status { color: var(--muted); font-size: 12.5px; text-align: center; padding: 20px; line-height: 1.6; }
         .login-status.error { color: #c17a7a; }
 
-        /* Force parent frame matching for the embedded container */
+        /* Force parent frame matching for the embedded container.
+           IMPORTANT: no forced height on the iframe. The widget's own steps
+           (email / password / OTP / TOTP) are different heights, and a fixed
+           height clips taller steps, forcing an internal scrollbar inside
+           the white box (which reads as "nothing renders, just scrolls").
+           min-height gives a sane floor for the first paint; the iframe is
+           free to grow past it once content loads. */
         #catalyst-login {
           width: 100%;
-          min-height: 300px;
+          min-height: 460px;
+          background: transparent;
         }
         #catalyst-login iframe {
           width: 100% !important;
-          height: 300px !important;
+          min-height: 460px;
           border: none !important;
+          background: transparent !important;
           color-scheme: ${theme};
         }
       `}</style>

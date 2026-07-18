@@ -1435,28 +1435,41 @@
    Only the rules below are ours.
    ======================================================================= */
 
-body {
+html, body {
   font-family: 'Inter', 'Roboto', sans-serif !important;
   background: transparent !important;
+  background-color: transparent !important;
+  height: auto !important;
+  min-height: 0 !important;
 }
 
 .bg_one { display: none !important; }
 
+.rightside_box { display: none !important; }
+
 .signin_container {
   width: 100% !important;
   min-height: 0 !important;
+  height: auto !important;
   background: transparent !important;
+  background-color: transparent !important;
   box-shadow: none !important;
   margin: 0 !important;
+  overflow: visible !important;
 }
 
 .signin_box {
   width: 100% !important;
   min-height: 0 !important;
+  height: auto !important;
   background: transparent !important;
+  background-color: transparent !important;
   border-right: none !important;
   padding: 0 !important;
   box-sizing: border-box !important;
+  float: none !important;
+  display: block !important;
+  overflow-y: visible !important;
 }
 
 .signin_head, .titlename {
