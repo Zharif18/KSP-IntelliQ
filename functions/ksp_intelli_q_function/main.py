@@ -72,6 +72,7 @@ def handler(request: Request):
             ("/search_case", "GET"): search_case,
             ("/add_case", "POST"): add_case,
             ("/update_case_status", "PUT"): update_case_status,
+            ("/get_case_detail", "GET"): get_case_detail,
             ("/get_network_graph", "GET"): get_network_graph,
             ("/get_officers", "GET"): get_officers,
             ("/get_reports", "GET"): get_reports,
@@ -296,6 +297,47 @@ def _mask_person_label(person_key, reason):
 
 
 # ---------------------------------------------------------------------
+# Shared redaction rules — used by EVERY route that returns a named
+# person (network graph, case detail, and anything added later), so
+# the masking logic lives in exactly one place instead of being
+# re-implemented per screen. That's the actual fix for "some tabs
+# apply this and some don't": there is now only one place this logic
+# can drift.
+#
+# _redact_accused: unchanged rule already used by the network graph —
+#   juvenile -> always masked (Sec 74 JJ Act); otherwise masked only if
+#   officer.can_view_pii is False (SCRB Analyst today).
+#
+# _redact_victim: same juvenile/PII rules, PLUS a victim-privacy rule
+#   that doesn't apply to accused: in a sensitive-crime case (proxy for
+#   POCSO / sexual-offence matters, BNSS Sec 74 victim-identity
+#   protection), the victim's name is masked for anyone who is not the
+#   investigating officer or that officer's own station — i.e. an SP
+#   overseeing a district, or an SCRB analyst, never gets the victim's
+#   name for these cases, even though they can see the rest of the case.
+#   `viewer_has_case_access` should be True only when the case is the
+#   caller's own case or their own station's case (OWN_CASES/STATION
+#   scope, already matched) — never for DISTRICT/STATE scope.
+# ---------------------------------------------------------------------
+def _redact_accused(person_key, name, age_year, officer):
+    if _is_juvenile(age_year):
+        return _mask_person_label(person_key, "JUVENILE"), True
+    if not officer["can_view_pii"]:
+        return _mask_person_label(person_key, "PERSON"), True
+    return name, False
+
+
+def _redact_victim(person_key, name, age_year, crime_head_id, officer, viewer_has_case_access):
+    if _is_juvenile(age_year):
+        return _mask_person_label(person_key, "JUVENILE"), True
+    if crime_head_id in SENSITIVE_CRIME_HEADS and not viewer_has_case_access:
+        return _mask_person_label(person_key, "VICTIM"), True
+    if not officer["can_view_pii"]:
+        return _mask_person_label(person_key, "PERSON"), True
+    return name, False
+
+
+# ---------------------------------------------------------------------
 # Case-scoping — the RBAC heart of every case-touching route.
 # Returns a SQL WHERE fragment (no leading "WHERE") or "" for
 # STATE-scope roles that see everything. Never returns None: an
@@ -330,6 +372,40 @@ def _case_scope_clause(app, officer):
 
 def _require_scope_at_least(officer, min_scope):
     return SCOPE_RANK.get(officer["data_scope"], 0) >= SCOPE_RANK.get(min_scope, 99)
+
+
+# ---------------------------------------------------------------------
+# Case-level membership check — "is THIS specific case inside this
+# officer's scope", as opposed to _case_scope_clause which builds a
+# WHERE fragment for searching many cases at once. Every route that
+# operates on a single case_master_id (update_case_status, and now
+# get_case_detail) should use this so the boundary is defined once.
+#
+# Returns (in_scope: bool, is_direct_holder: bool). is_direct_holder is
+# True only for OWN_CASES/STATION scope — i.e. the caller is the
+# investigating officer or shares that officer's station. DISTRICT/STATE
+# scope (SP, SCRB Analyst) can be in_scope=True for oversight purposes
+# without being a direct holder — used by _redact_victim to keep
+# victim-privacy masking in place for oversight roles even though they
+# can otherwise see the case.
+# ---------------------------------------------------------------------
+def _case_in_officer_scope(app, officer, case_row):
+    scope = officer["data_scope"]
+    if scope == "OWN_CASES":
+        in_scope = case_row.get("PolicePersonID") == officer["employee_id"]
+        return in_scope, in_scope
+    if scope == "STATION":
+        in_scope = case_row.get("PoliceStationID") == officer["unit_id"]
+        return in_scope, in_scope
+    if scope == "DISTRICT":
+        if not officer["district_id"]:
+            return False, False
+        unit_rows = zcql_rows(app, "Unit", f"SELECT UnitID FROM Unit WHERE DistrictID = '{officer['district_id']}'")
+        in_scope = case_row.get("PoliceStationID") in {u["UnitID"] for u in unit_rows}
+        return in_scope, False
+    if scope == "STATE":
+        return True, False
+    return False, False
 
 
 # ---------------------------------------------------------------------
@@ -498,19 +574,110 @@ def update_case_status(app, request, officer, audit):
 
     if officer["role_name"] == "SCRB Analyst":
         return make_response(jsonify({"error": "forbidden", "message": "Your role does not permit updating cases."}), 403)
-    if officer["data_scope"] == "OWN_CASES" and case["PolicePersonID"] != officer["employee_id"]:
-        return make_response(jsonify({"error": "forbidden", "message": "You can only update your own cases."}), 403)
-    if officer["data_scope"] == "STATION" and case["PoliceStationID"] != officer["unit_id"]:
-        return make_response(jsonify({"error": "forbidden", "message": "That case is outside your station."}), 403)
-    if officer["data_scope"] == "DISTRICT":
-        unit_rows = zcql_rows(app, "Unit", f"SELECT UnitID FROM Unit WHERE DistrictID = '{officer['district_id']}'")
-        if case["PoliceStationID"] not in {u["UnitID"] for u in unit_rows}:
-            return make_response(jsonify({"error": "forbidden", "message": "That case is outside your district."}), 403)
+    in_scope, _ = _case_in_officer_scope(app, officer, case)
+    if not in_scope:
+        return make_response(jsonify({"error": "forbidden", "message": "That case is outside your access scope."}), 403)
 
     table = app.datastore().table("CaseMaster")
     updated = table.update_row({"ROWID": rows[0]["ROWID"], "CaseStatusID": status_id})
 
     return make_response(jsonify({"message": "Case updated", "case": updated.get("row")}), 200)
+
+
+# ---------------------------------------------------------------------
+# GET /get_case_detail?case_master_id=
+#
+# The one place identity-bearing data (Accused, Victim, Complainant)
+# is exposed beyond the network graph, so it's also the one place the
+# same redaction rules from _redact_accused / _redact_victim above
+# have to be applied — every name in the response is either the real
+# name or a masked placeholder, never left to the frontend to decide.
+#
+# RBAC: same case-membership check as update_case_status
+# (_case_in_officer_scope) — a case outside the caller's scope 403s
+# before any row (redacted or not) is even fetched.
+# ---------------------------------------------------------------------
+def get_case_detail(app, request, officer, audit):
+    audit["resource_type"] = "case_detail"
+    case_id = (request.args.get("case_master_id") or "").strip()
+    if not case_id:
+        return make_response(jsonify({"error": "case_master_id is required"}), 400)
+
+    audit["resource_id"] = case_id
+
+    rows = zcql_rows(app, "CaseMaster", f"SELECT * FROM CaseMaster WHERE CaseMasterID = '{case_id}'")
+    if not rows:
+        return make_response(jsonify({"error": "Case not found"}), 404)
+    case = rows[0]
+
+    in_scope, viewer_has_case_access = _case_in_officer_scope(app, officer, case)
+    if not in_scope:
+        return make_response(jsonify({"error": "forbidden", "message": "That case is outside your access scope."}), 403)
+
+    crime_head_id = case.get("CrimeMajorHeadID")
+
+    lookups = _lookups(app)
+    unit_name = {u["UnitID"]: u["UnitName"] for u in lookups["units"]}
+    district_name = {d["DistrictID"]: d["DistrictName"] for d in lookups["districts"]}
+    unit_district = {u["UnitID"]: u["DistrictID"] for u in lookups["units"]}
+    subhead_name = {s["CrimeSubHeadID"]: s["CrimeHeadName"] for s in lookups["crime_subheads"]}
+    status_name = {s["CaseStatusID"]: s["CaseStatusName"] for s in lookups["statuses"]}
+
+    accused_rows = zcql_rows(app, "Accused",
+        f"SELECT AccusedMasterID, AccusedName, AgeYear, GenderID, PersonKey FROM Accused WHERE CaseMasterID = '{case_id}'")
+    victim_rows = zcql_rows(app, "Victim",
+        f"SELECT VictimMasterID, VictimName, AgeYear, GenderID, VictimPolice FROM Victim WHERE CaseMasterID = '{case_id}'")
+    complainant_rows = zcql_rows(app, "ComplainantDetails",
+        f"SELECT ComplainantID, ComplainantName, AgeYear, Occupation, GenderID FROM ComplainantDetails WHERE CaseMasterID = '{case_id}'")
+
+    accused_out = []
+    for a in accused_rows:
+        pk = a.get("PersonKey") or a["AccusedMasterID"]
+        label, redacted = _redact_accused(pk, a["AccusedName"], a.get("AgeYear"), officer)
+        accused_out.append({
+            "id": a["AccusedMasterID"], "name": label, "redacted": redacted,
+            "age": None if redacted else a.get("AgeYear"), "gender": a.get("GenderID"),
+        })
+
+    victim_out = []
+    for v in victim_rows:
+        pk = v["VictimMasterID"]
+        label, redacted = _redact_victim(pk, v["VictimName"], v.get("AgeYear"), crime_head_id, officer, viewer_has_case_access)
+        victim_out.append({
+            "id": v["VictimMasterID"], "name": label, "redacted": redacted,
+            "age": None if redacted else v.get("AgeYear"), "gender": v.get("GenderID"),
+        })
+
+    # Complainant isn't necessarily the victim (can be a family member,
+    # witness, or the reporting officer) but carries the same real-world
+    # identifiability, so it's masked under the exact same rule set.
+    complainant_out = []
+    for c in complainant_rows:
+        pk = c["ComplainantID"]
+        label, redacted = _redact_victim(pk, c["ComplainantName"], c.get("AgeYear"), crime_head_id, officer, viewer_has_case_access)
+        complainant_out.append({
+            "id": c["ComplainantID"], "name": label, "redacted": redacted,
+            "age": None if redacted else c.get("AgeYear"), "occupation": c.get("Occupation"), "gender": c.get("GenderID"),
+        })
+
+    audit["record_count"] = len(accused_out) + len(victim_out) + len(complainant_out)
+
+    return make_response(jsonify({
+        "case": {
+            "caseMasterId": case["CaseMasterID"],
+            "caseNo": case.get("CaseNo"),
+            "crimeType": subhead_name.get(case.get("CrimeMinorHeadID"), "Unknown"),
+            "station": unit_name.get(case.get("PoliceStationID"), "Unassigned"),
+            "district": district_name.get(unit_district.get(case.get("PoliceStationID")), "\u2014"),
+            "registeredDate": case.get("CrimeRegisteredDate"),
+            "status": status_name.get(case.get("CaseStatusID"), "Unknown"),
+            "briefFacts": case.get("BriefFacts", ""),
+            "sensitiveCase": crime_head_id in SENSITIVE_CRIME_HEADS,
+        },
+        "accused": accused_out,
+        "victims": victim_out,
+        "complainants": complainant_out,
+    }), 200)
 
 
 # ---------------------------------------------------------------------
@@ -586,18 +753,12 @@ def _network_graph(app, officer, district_id="", min_cases=1, limit_persons=120)
         entries = persons[pk]
         stations = {case_station.get(e["caseId"]) for e in entries if case_station.get(e["caseId"])}
         crimes = {subhead_name.get(case_crime.get(e["caseId"])) for e in entries if case_crime.get(e["caseId"])}
-        is_juvenile = any(_is_juvenile(e.get("age")) for e in entries)
         is_sensitive = any(case_head.get(e["caseId"]) in SENSITIVE_CRIME_HEADS for e in entries)
-
-        if is_juvenile:
-            label = _mask_person_label(pk, "JUVENILE")
-            redacted = True
-        elif not officer["can_view_pii"]:
-            label = _mask_person_label(pk, "PERSON")
-            redacted = True
-        else:
-            label = entries[-1]["name"]
-            redacted = False
+        # A person can appear as a juvenile in one linked case and not in
+        # another (age recorded at time of that case) — treat as juvenile
+        # if it's true in ANY of their entries, same as before.
+        oldest_age = next((e.get("age") for e in entries if _is_juvenile(e.get("age"))), entries[-1].get("age"))
+        label, redacted = _redact_accused(pk, entries[-1]["name"], oldest_age, officer)
 
         nodes.append({
             "id": pk,

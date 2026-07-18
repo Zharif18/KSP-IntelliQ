@@ -1,3 +1,48 @@
+/* ==========================================================================
+   KSP IntelliQ — shared design system
+   Reused across every screen so the app reads as one product, not eight.
+   Vocabulary: translucent glass panels, soft depth, restrained gold accent,
+   generous motion on entrance, calm on everything after. Apple Vision Pro /
+   Google AI Studio in spirit — not literal chrome-copying, just the same
+   restraint: neutral surfaces, one accent color, real depth via blur+shadow
+   instead of borders and gradients doing the work.
+   ========================================================================== */
+:root {
+  /* Dark (default) palette */
+  --ink: #0a0c10;
+  --ink-2: #0f1219;
+  --panel: rgba(255, 255, 255, 0.045);
+  --panel-solid: #14171f;
+  --panel-border: rgba(255, 255, 255, 0.09);
+  --gold: #d4b073;
+  --gold-strong: #e8c98d;
+  --text: #f3f1ea;
+  --muted: #9aa0ad;
+  --shadow: 0 24px 70px rgba(0, 0, 0, 0.45), 0 2px 8px rgba(0, 0, 0, 0.3);
+  --blur: blur(28px) saturate(160%);
+  --radius-lg: 24px;
+  --radius-md: 16px;
+  --radius-sm: 10px;
+  --ease-rise: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+[data-theme='light'] {
+  --ink: #f4f1ea;
+  --ink-2: #ffffff;
+  --panel: rgba(255, 255, 255, 0.55);
+  --panel-solid: #ffffff;
+  --panel-border: rgba(32, 29, 23, 0.1);
+  --gold: #93692e;
+  --gold-strong: #7a5624;
+  --text: #201d17;
+  --muted: #6b6656;
+  --shadow: 0 24px 60px rgba(32, 29, 23, 0.12), 0 2px 8px rgba(32, 29, 23, 0.06);
+}
+
+* {
+  box-sizing: border-box;
+}
+
 body {
   margin: 0;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
@@ -5,6 +50,31 @@ body {
     sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+/* Reusable "rise into place" entrance — the pop-up-from-below feel.
+   Any screen/panel can opt in with class="rise-in", staggered via
+   inline `--rise-delay`. */
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(38px) scale(0.97);
+    filter: blur(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    filter: blur(0);
+  }
+}
+.rise-in {
+  animation: rise-in 0.7s var(--ease-rise) both;
+  animation-delay: var(--rise-delay, 0s);
+}
+@media (prefers-reduced-motion: reduce) {
+  .rise-in {
+    animation: none;
+  }
 }
 
 code {

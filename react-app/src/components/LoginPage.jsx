@@ -100,36 +100,74 @@ export default function LoginPage() {
   };
 
   return (
-    <div className={`login-wrap theme-${theme}`}>
+    <div className={`login-wrap theme-${theme}`} data-theme={theme}>
       <style>{`
         .login-wrap {
           min-height: 100vh; display: flex; flex-direction: column; align-items: center;
-          justify-content: center; font-family: 'Inter', sans-serif; position: relative;
+          justify-content: center; font-family: -apple-system, 'Inter', sans-serif; position: relative;
+          overflow: hidden; background: var(--ink); color: var(--text);
+          transition: background 0.4s ease, color 0.4s ease;
         }
-        .theme-dark {
-          --ink: #0e1116; --panel: #171b23; --gold: #d4b073; --gold-strong: #e8c98d;
-          --text: #f3f1ea; --muted: #a8adba; --border: rgba(255,255,255,0.1);
-          background: var(--ink); color: var(--text);
-          background-image: radial-gradient(circle at 85% 0%, rgba(212,176,115,0.07), transparent 50%);
+
+        /* Soft ambient glow, not a flat gradient — sits behind everything,
+           drifts slowly so the screen never feels static. */
+        .login-wrap::before, .login-wrap::after {
+          content: ''; position: absolute; border-radius: 50%; filter: blur(90px);
+          pointer-events: none; opacity: 0.5;
         }
-        .theme-light {
-          --ink: #f3efe6; --panel: #ffffff; --gold: #93692e; --gold-strong: #7a5624;
-          --text: #201d17; --muted: #5c5749; --border: rgba(32,29,23,0.12);
-          background: var(--ink); color: var(--text);
-          background-image: radial-gradient(circle at 85% 0%, rgba(147,105,46,0.05), transparent 50%);
+        .login-wrap::before {
+          width: 620px; height: 620px; top: -220px; right: -160px;
+          background: radial-gradient(circle, var(--gold) 0%, transparent 70%);
+          opacity: 0.16; animation: drift-a 16s ease-in-out infinite alternate;
         }
-        .theme-toggle { position: absolute; top: 20px; right: 20px; width: 34px; height: 34px;
-          border-radius: 8px; background: var(--panel); border: 1px solid var(--border);
-          display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--text); }
-        .login-brand { display: flex; flex-direction: column; align-items: center; gap: 10px; margin-bottom: 28px; }
-        .login-title { font-size: 22px; font-weight: 700; }
-        .login-sub { color: var(--muted); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; }
-        .login-card { background: var(--panel); border: 1px solid var(--border); border-radius: 16px;
-          padding: 28px; width: 360px; max-width: 90vw; min-height: 340px; box-sizing: border-box;
-          box-shadow: 0 12px 40px rgba(0,0,0,0.2); display: flex; flex-direction: column; align-items: center; justify-content: center;
-          overflow: visible; }
+        .login-wrap::after {
+          width: 480px; height: 480px; bottom: -200px; left: -140px;
+          background: radial-gradient(circle, var(--gold-strong) 0%, transparent 70%);
+          opacity: 0.1; animation: drift-b 20s ease-in-out infinite alternate;
+        }
+        @keyframes drift-a { from { transform: translate(0,0); } to { transform: translate(-40px, 30px); } }
+        @keyframes drift-b { from { transform: translate(0,0); } to { transform: translate(30px, -20px); } }
+
+        .theme-toggle {
+          position: absolute; top: 24px; right: 24px; width: 38px; height: 38px;
+          border-radius: 12px; background: var(--panel); backdrop-filter: var(--blur);
+          -webkit-backdrop-filter: var(--blur); border: 1px solid var(--panel-border);
+          display: flex; align-items: center; justify-content: center; cursor: pointer;
+          color: var(--text); transition: transform 0.2s var(--ease-rise), border-color 0.2s ease;
+          z-index: 5;
+        }
+        .theme-toggle:hover { transform: translateY(-2px); border-color: var(--gold); }
+
+        .login-brand {
+          display: flex; flex-direction: column; align-items: center; gap: 12px;
+          margin-bottom: 32px; position: relative; z-index: 2;
+        }
+        .login-brand-icon {
+          width: 56px; height: 56px; border-radius: 16px; display: flex; align-items: center;
+          justify-content: center; background: var(--panel); backdrop-filter: var(--blur);
+          -webkit-backdrop-filter: var(--blur); border: 1px solid var(--panel-border);
+          box-shadow: var(--shadow);
+        }
+        .login-title { font-size: 24px; font-weight: 650; letter-spacing: -0.01em; }
+        .login-sub {
+          color: var(--muted); font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase;
+        }
+
+        .login-card {
+          background: var(--panel); backdrop-filter: var(--blur); -webkit-backdrop-filter: var(--blur);
+          border: 1px solid var(--panel-border); border-radius: var(--radius-lg);
+          padding: 32px; width: 380px; max-width: 90vw; min-height: 340px; box-sizing: border-box;
+          box-shadow: var(--shadow); display: flex; flex-direction: column; align-items: center;
+          justify-content: center; overflow: visible; position: relative; z-index: 2;
+        }
+        /* Fine top highlight — the "glass catching light" detail that sells depth. */
+        .login-card::before {
+          content: ''; position: absolute; top: 0; left: 16px; right: 16px; height: 1px;
+          background: linear-gradient(90deg, transparent, var(--panel-border), transparent);
+        }
+
         .login-status { color: var(--muted); font-size: 12.5px; text-align: center; padding: 20px; line-height: 1.6; }
-        .login-status.error { color: #c17a7a; }
+        .login-status.error { color: #d99b9b; }
 
         /* Force parent frame matching for the embedded container.
            IMPORTANT: no forced height on the iframe. The widget's own steps
@@ -152,17 +190,19 @@ export default function LoginPage() {
         }
       `}</style>
 
-      <div className="theme-toggle" onClick={toggleTheme} title="Toggle theme">
+      <div className="theme-toggle rise-in" style={{ "--rise-delay": "0.05s" }} onClick={toggleTheme} title="Toggle theme">
         {theme === "dark" ? <Sun size={15} /> : <Moon size={15} />}
       </div>
 
-      <div className="login-brand">
-        <Shield size={32} color="var(--gold-strong)" />
+      <div className="login-brand rise-in" style={{ "--rise-delay": "0.05s" }}>
+        <div className="login-brand-icon">
+          <Shield size={26} color="var(--gold-strong)" />
+        </div>
         <div className="login-title">KSP IntelliQ</div>
         <div className="login-sub">Crime Intelligence &amp; Decision Support</div>
       </div>
 
-      <div className="login-card">
+      <div className="login-card rise-in" style={{ "--rise-delay": "0.18s" }}>
         {status === "timeout" && (
           <div className="login-status error">
             Sign-in form didn't load. This usually means Embedded Authentication isn't

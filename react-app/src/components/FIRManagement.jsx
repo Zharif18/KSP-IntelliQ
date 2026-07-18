@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Search, Plus, X, FileText } from "lucide-react";
+import { Search, Plus, X, FileText, Lock, Eye } from "lucide-react";
 
 /* ---------------------------------------------------------------------
    Calls the real backend routes:
@@ -42,6 +42,41 @@ export default function FIRManagement() {
   const [form, setForm] = useState(EmptyForm());
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
+
+  const [detailCaseId, setDetailCaseId] = useState(null);
+  const [detail, setDetail] = useState(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState(null);
+  const [detailForbidden, setDetailForbidden] = useState(false);
+
+  const openCaseDetail = (caseMasterId) => {
+    setDetailCaseId(caseMasterId);
+    setDetail(null);
+    setDetailError(null);
+    setDetailForbidden(false);
+    setDetailLoading(true);
+    fetch(`/server/ksp_intelli_q_function/get_case_detail?case_master_id=${encodeURIComponent(caseMasterId)}`, {
+      credentials: "include",
+    })
+      .then(async (res) => {
+        const body = await res.json().catch(() => ({}));
+        if (res.status === 403) {
+          setDetailForbidden(true);
+          return;
+        }
+        if (!res.ok) throw new Error(body.error || `Failed (${res.status})`);
+        setDetail(body);
+      })
+      .catch((err) => setDetailError(err.message))
+      .finally(() => setDetailLoading(false));
+  };
+
+  const closeCaseDetail = () => {
+    setDetailCaseId(null);
+    setDetail(null);
+    setDetailError(null);
+    setDetailForbidden(false);
+  };
 
   useEffect(() => {
     Promise.all([fetchJSON("get_lookups"), fetchJSON("get_current_officer")])
@@ -126,6 +161,19 @@ export default function FIRManagement() {
           text-transform: uppercase; letter-spacing: 0.06em; border-bottom: 1px solid var(--border); }
         .fir-table td { padding: 12px; border-bottom: 1px solid var(--border); }
         .fir-table tr:last-child td { border-bottom: none; }
+        .fir-row { cursor: pointer; }
+        .fir-row:hover td { background: var(--panel-raised); }
+        .redacted-name { display: inline-flex; align-items: center; gap: 5px; color: var(--muted);
+          font-family: monospace; font-size: 11.5px; }
+        .detail-section { margin-top: 16px; }
+        .detail-section-title { font-size: 11px; color: var(--muted); text-transform: uppercase;
+          letter-spacing: 0.06em; font-weight: 600; margin-bottom: 8px; }
+        .detail-person-row { display: flex; align-items: center; justify-content: space-between;
+          padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 12.5px; }
+        .detail-person-row:last-child { border-bottom: none; }
+        .sensitive-banner { display: flex; align-items: center; gap: 8px; background: rgba(193,122,122,0.12);
+          border: 1px solid rgba(193,122,122,0.3); color: var(--wine); border-radius: 8px;
+          padding: 8px 12px; font-size: 11.5px; margin-top: 12px; }
         .status-pill { display: inline-block; padding: 3px 10px; border-radius: 20px; font-size: 10.5px;
           font-weight: 600; background: rgba(255,255,255,0.06); }
         .fir-empty { text-align: center; padding: 40px; color: var(--muted); font-size: 13px; }
@@ -190,18 +238,19 @@ export default function FIRManagement() {
           <table className="fir-table">
             <thead>
               <tr>
-                <th>Case ID</th><th>Crime Type</th><th>Station</th><th>District</th><th>Date</th><th>Status</th>
+                <th>Case ID</th><th>Crime Type</th><th>Station</th><th>District</th><th>Date</th><th>Status</th><th></th>
               </tr>
             </thead>
             <tbody>
               {results.map((c) => (
-                <tr key={c.CaseMasterID}>
+                <tr key={c.CaseMasterID} className="fir-row" onClick={() => openCaseDetail(c.CaseMasterID)}>
                   <td className="mono" style={{ fontFamily: "monospace" }}>{c.CaseMasterID}</td>
                   <td>{subheadName(c.CrimeMinorHeadID)}</td>
                   <td>{unitName(c.PoliceStationID)}</td>
                   <td>{districtName(districtOfUnit(c.PoliceStationID))}</td>
                   <td>{c.CrimeRegisteredDate}</td>
                   <td><span className="status-pill">{statusName(c.CaseStatusID)}</span></td>
+                  <td><Eye size={13} color="var(--muted)" /></td>
                 </tr>
               ))}
             </tbody>
@@ -257,6 +306,89 @@ export default function FIRManagement() {
                 {submitting ? "Saving…" : "Create FIR"}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {detailCaseId && (
+        <div className="modal-overlay" onClick={closeCaseDetail}>
+          <div className="modal" style={{ width: 460 }} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <div className="modal-title">Case Detail — {detailCaseId}</div>
+              <X size={16} style={{ cursor: "pointer", color: "var(--muted)" }} onClick={closeCaseDetail} />
+            </div>
+
+            {detailLoading && <div className="fir-empty" style={{ padding: 20 }}>Loading case detail…</div>}
+
+            {detailForbidden && (
+              <div className="fir-error">
+                That case is outside your access scope. This view is logged, and denied
+                attempts are recorded in the audit trail.
+              </div>
+            )}
+
+            {detailError && <div className="fir-error">{detailError}</div>}
+
+            {detail && (
+              <>
+                <div style={{ fontSize: 12.5, color: "var(--muted)" }}>
+                  {detail.case.crimeType} · {detail.case.station} · {detail.case.district}
+                </div>
+                <div style={{ fontSize: 12.5, marginTop: 6 }}>{detail.case.briefFacts}</div>
+
+                {detail.case.sensitiveCase && (
+                  <div className="sensitive-banner">
+                    <Lock size={13} /> Sensitive-crime case — victim &amp; complainant identity is
+                    restricted to the investigating officer/station under victim-privacy rules.
+                  </div>
+                )}
+
+                <div className="detail-section">
+                  <div className="detail-section-title">Accused ({detail.accused.length})</div>
+                  {detail.accused.length === 0 && <div style={{ color: "var(--muted)", fontSize: 12 }}>None on file.</div>}
+                  {detail.accused.map((a) => (
+                    <div className="detail-person-row" key={a.id}>
+                      <span>
+                        {a.redacted ? (
+                          <span className="redacted-name"><Lock size={11} /> {a.name}</span>
+                        ) : a.name}
+                      </span>
+                      <span style={{ color: "var(--muted)" }}>{a.age ? `${a.age} yrs` : ""}</span>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="detail-section">
+                  <div className="detail-section-title">Victim(s) ({detail.victims.length})</div>
+                  {detail.victims.length === 0 && <div style={{ color: "var(--muted)", fontSize: 12 }}>None on file.</div>}
+                  {detail.victims.map((v) => (
+                    <div className="detail-person-row" key={v.id}>
+                      <span>
+                        {v.redacted ? (
+                          <span className="redacted-name"><Lock size={11} /> {v.name}</span>
+                        ) : v.name}
+                      </span>
+                      <span style={{ color: "var(--muted)" }}>{v.age ? `${v.age} yrs` : ""}</span>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="detail-section">
+                  <div className="detail-section-title">Complainant(s) ({detail.complainants.length})</div>
+                  {detail.complainants.length === 0 && <div style={{ color: "var(--muted)", fontSize: 12 }}>None on file.</div>}
+                  {detail.complainants.map((c) => (
+                    <div className="detail-person-row" key={c.id}>
+                      <span>
+                        {c.redacted ? (
+                          <span className="redacted-name"><Lock size={11} /> {c.name}</span>
+                        ) : c.name}
+                      </span>
+                      <span style={{ color: "var(--muted)" }}>{c.occupation || ""}</span>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}
