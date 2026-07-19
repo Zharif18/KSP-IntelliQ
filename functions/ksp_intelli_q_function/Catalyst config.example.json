@@ -3,10 +3,7 @@
 		"name": "ksp_intelli_q_function",
 		"stack": "python_3_9",
 		"type": "advancedio",
-		"env_variables": {
-			"GEMINI_API_KEY": "RETRACTED_FOR_SECURITY_PURPOSES",
-			"GEMINI_MODEL": "gemini-2.0-flash"
-		}
+		"env_variables": {}
 	},
 	"execution": {
 		"main": "main.py"

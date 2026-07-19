@@ -4,7 +4,6 @@ import json
 import time
 import hashlib
 import datetime
-import requests  # type: ignore
 from flask import Request, make_response, jsonify # type: ignore
 import zcatalyst_sdk #type: ignore
 
@@ -78,6 +77,9 @@ def handler(request: Request):
             ("/get_reports", "GET"): get_reports,
             ("/ai_assistant", "POST"): ai_assistant,
             ("/get_audit_log", "GET"): get_audit_log,
+            ("/get_hotspots", "GET"): get_hotspots,
+            ("/get_incident_log", "GET"): get_incident_log,
+            ("/get_crime_trend", "GET"): get_crime_trend,
         }
 
         route_fn = routes.get((request.path, request.method))
@@ -105,7 +107,7 @@ def handler(request: Request):
             if app is not None and response is not None:
                 _write_audit_log(app, officer, request, audit, response)
         except Exception as audit_err:
-            logger.error(f"Audit logging failed (non-fatal): {audit_err}")
+            logger.error(f"Audit logging failed (non-fatal): {audit_err} | row_data={audit.get('_last_row_data')}")
 
 
 # ---------------------------------------------------------------------
@@ -935,6 +937,169 @@ def get_reports(app, request, officer, audit):
 
 
 # ---------------------------------------------------------------------
+# GET /get_hotspots?limit=&window_days=
+#
+# Replaces the frontend's old MOCK_HOTSPOTS. Aggregates CaseMaster rows
+# from the last `window_days` (default 30) into per-station counts,
+# using the SAME scope clause as the dashboard stats — a Constable only
+# ever sees their own cases bucketed, a Station officer their station,
+# an SP their district, SCRB Analyst statewide. Nobody sees a station
+# outside their own access just because it's "just a forecast panel".
+#
+# "risk" is a simple relative measure: each station's count as a
+# percentage of the busiest station's count in the same scoped window.
+# This is deliberately simple (not a real predictive model) but it is
+# real, live, scope-correct data — not a hardcoded placeholder.
+# ---------------------------------------------------------------------
+def _hotspots(app, officer, limit=6, window_days=30):
+    from collections import Counter, defaultdict
+
+    scope_clause = _case_scope_clause(app, officer)
+    cutoff = (datetime.date.today() - datetime.timedelta(days=window_days)).isoformat()
+    conditions = [c for c in [scope_clause, f"CrimeRegisteredDate >= '{cutoff}'"] if c]
+    where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+    cases = zcql_rows(app, "CaseMaster",
+        f"SELECT PoliceStationID, CrimeMinorHeadID FROM CaseMaster{where}")
+
+    station_counts = Counter()
+    station_types = defaultdict(Counter)
+    for c in cases:
+        sid = c.get("PoliceStationID")
+        if not sid:
+            continue
+        station_counts[sid] += 1
+        subhead = c.get("CrimeMinorHeadID")
+        if subhead:
+            station_types[sid][subhead] += 1
+
+    if not station_counts:
+        return []
+
+    lookups = _lookups(app)
+    unit_name = {u["UnitID"]: u["UnitName"] for u in lookups["units"]}
+    subhead_name = {s["CrimeSubHeadID"]: s["CrimeHeadName"] for s in lookups["crime_subheads"]}
+
+    max_count = max(station_counts.values())
+    hotspots = []
+    for sid, count in station_counts.most_common(limit):
+        top_subhead_id = station_types[sid].most_common(1)[0][0] if station_types[sid] else None
+        hotspots.append({
+            "area": unit_name.get(sid, sid),
+            "type": subhead_name.get(top_subhead_id, "Mixed"),
+            "risk": round((count / max_count) * 100),
+            "caseCount": count,
+        })
+    return hotspots
+
+
+def get_hotspots(app, request, officer, audit):
+    audit["resource_type"] = "hotspot_forecast"
+    limit = int(request.args.get("limit") or 6)
+    window_days = int(request.args.get("window_days") or 30)
+    result = _hotspots(app, officer, limit=limit, window_days=window_days)
+    audit["record_count"] = len(result)
+    return make_response(jsonify({"hotspots": result}), 200)
+
+
+# ---------------------------------------------------------------------
+# GET /get_incident_log?limit=
+#
+# Replaces the frontend's old MOCK_LOG. Deliberately built from the
+# officer's own SCOPED CaseMaster rows (same _case_scope_clause as
+# everything else) rather than the AuditLog table — AuditLog is
+# restricted to DISTRICT+ scope for a different reason (reviewing who
+# looked at what is itself privileged), but every role that can see the
+# Dashboard tab should be able to see a feed of their own recent case
+# activity.
+# ---------------------------------------------------------------------
+def _format_incident_time(value):
+    if not value:
+        return ""
+    date_part, _, time_part = value.partition("T")
+    try:
+        y, m, d = date_part.split("-")
+        month_name = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                      "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][int(m) - 1]
+        date_label = f"{int(d):02d} {month_name}"
+    except Exception:
+        date_label = date_part
+    time_label = time_part[:5] if time_part else ""
+    return f"{date_label}, {time_label}" if time_label else date_label
+
+
+def _incident_log(app, officer, limit=8):
+    scope_clause = _case_scope_clause(app, officer)
+    where = f" WHERE {scope_clause}" if scope_clause else ""
+    cases = zcql_rows(app, "CaseMaster",
+        f"SELECT CaseNo, PoliceStationID, CrimeMinorHeadID, CaseStatusID, "
+        f"CrimeRegisteredDate, InfoReceivedPSDate FROM CaseMaster{where} "
+        f"ORDER BY CrimeRegisteredDate DESC LIMIT {limit}")
+
+    lookups = _lookups(app)
+    unit_name = {u["UnitID"]: u["UnitName"] for u in lookups["units"]}
+    subhead_name = {s["CrimeSubHeadID"]: s["CrimeHeadName"] for s in lookups["crime_subheads"]}
+    status_name = {s["CaseStatusID"]: s["CaseStatusName"] for s in lookups["statuses"]}
+
+    entries = []
+    for c in cases:
+        station = unit_name.get(c.get("PoliceStationID"), "Unassigned")
+        crime = subhead_name.get(c.get("CrimeMinorHeadID"), "Case")
+        status = status_name.get(c.get("CaseStatusID"), "")
+        display_time = _format_incident_time(c.get("InfoReceivedPSDate") or c.get("CrimeRegisteredDate"))
+        text = f"{crime} reported — {station}"
+        if status:
+            text += f" ({status})"
+        entries.append({"time": display_time, "text": text, "caseNo": c.get("CaseNo")})
+    return entries
+
+
+def get_incident_log(app, request, officer, audit):
+    audit["resource_type"] = "incident_log"
+    limit = int(request.args.get("limit") or 8)
+    result = _incident_log(app, officer, limit=limit)
+    audit["record_count"] = len(result)
+    return make_response(jsonify({"entries": result}), 200)
+
+
+# ---------------------------------------------------------------------
+# GET /get_crime_trend?days=
+#
+# Replaces the frontend's old MOCK_TREND. Daily case-registration
+# counts for the last `days` days (default 7), scoped the same way as
+# the dashboard stats. Always returns one entry per day in the window,
+# even if the count is 0, so the chart's x-axis stays a full week.
+# ---------------------------------------------------------------------
+def _crime_trend(app, officer, days=7):
+    scope_clause = _case_scope_clause(app, officer)
+    today = datetime.date.today()
+    start = today - datetime.timedelta(days=days - 1)
+    conditions = [c for c in [scope_clause, f"CrimeRegisteredDate >= '{start.isoformat()}'"] if c]
+    where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+    cases = zcql_rows(app, "CaseMaster", f"SELECT CrimeRegisteredDate FROM CaseMaster{where}")
+
+    counts = {}
+    for c in cases:
+        d = (c.get("CrimeRegisteredDate") or "")[:10]
+        if d:
+            counts[d] = counts.get(d, 0) + 1
+
+    trend = []
+    for i in range(days):
+        d = start + datetime.timedelta(days=i)
+        iso = d.isoformat()
+        trend.append({"day": d.strftime("%a"), "date": iso, "crimes": counts.get(iso, 0)})
+    return trend
+
+
+def get_crime_trend(app, request, officer, audit):
+    audit["resource_type"] = "crime_trend"
+    days = int(request.args.get("days") or 7)
+    result = _crime_trend(app, officer, days=days)
+    audit["record_count"] = len(result)
+    return make_response(jsonify({"trend": result}), 200)
+
+
+# ---------------------------------------------------------------------
 # GET /get_audit_log?limit=
 # Who can see the audit trail is itself an access-control question: an
 # SP can review their own district's activity; an SCRB Analyst can see
@@ -960,7 +1125,7 @@ def get_audit_log(app, request, officer, audit):
             return make_response(jsonify({"entries": [], "count": 0}), 200)
 
     where_clause = f" WHERE {' AND '.join(conditions)}" if conditions else ""
-    entries = zcql_rows(app, "AuditLog", f"SELECT * FROM AuditLog{where_clause} ORDER BY CreatedTime DESC LIMIT {limit}")
+    entries = zcql_rows(app, "AuditLog", f"SELECT * FROM AuditLog{where_clause} ORDER BY Time_stamp DESC LIMIT {limit}")
     audit["record_count"] = len(entries)
     return make_response(jsonify({"entries": entries, "count": len(entries)}), 200)
 
@@ -997,7 +1162,7 @@ def _write_audit_log(app, officer, request, audit, response):
         pass
 
     row_data = {
-        "Timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+        "Time_stamp": datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
         "EmployeeID": officer.get("employee_id") or "",
         "EmployeeName": officer.get("name") or "",
         "RoleName": officer.get("role_name") or "Unassigned",
@@ -1007,40 +1172,143 @@ def _write_audit_log(app, officer, request, audit, response):
         "ResourceID": str(audit.get("resource_id") or ""),
         "RecordCount": audit.get("record_count") if audit.get("record_count") is not None else -1,
         "QueryParams": query_params,
-        "Result": result,
+        "_Result": result,
         "StatusCode": status_code,
     }
+    audit["_last_row_data"] = row_data
     app.datastore().table("AuditLog").insert_row(row_data)
 
 
 # ---------------------------------------------------------------------
 # POST /ai_assistant
-# RBAC: context is now built through the SAME scoped helpers
+# RBAC: context is built through the SAME scoped helpers
 # (_dashboard_stats, _network_graph, _search_cases) every REST route
 # uses, so the assistant can never leak data outside the caller's own
 # scope just because it's "just a chat answer."
+#
+# AI layer: Zoho Catalyst Zia AI — Text Analytics (Sentiment Analysis +
+# Keyword/Keyphrase Extraction + Named Entity Recognition), called via
+# app.zia() from this same serverless function. This runs entirely
+# inside the Catalyst project using the function's own execution
+# credentials: no external API key, no third-party LLM vendor, nothing
+# to configure in Environment Variables.
+#
+# Zia only has to UNDERSTAND the analyst's question (sentiment +
+# salient keywords/entities). The reply text itself is composed
+# deterministically in _compose_zia_reply() from the same scoped data
+# context every other route already produces — so the assistant can
+# never "hallucinate" a case number or a statistic that isn't really
+# in `context`.
 # ---------------------------------------------------------------------
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
-GEMINI_URL_TEMPLATE = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-
-SYSTEM_PROMPT = """You are IntelliQ, an AI assistant embedded in the Karnataka State Police \
-crime-intelligence platform, used by SCRB analysts and station officers. \
-You will be given a CONTEXT block of real, live data pulled from the police records \
-system for this specific question, plus the analyst's question. \
-Rules:
-- Answer ONLY using facts present in CONTEXT. Never invent case numbers, names, or statistics.
-- If CONTEXT doesn't contain what's asked, say so plainly and suggest what to search instead.
-- Keep answers under 100 words, professional, no bullet spam, plain prose.
-- If pointing the analyst to a screen would help, end your reply on its own new line with:
-  ACTION: {"tab": "Network"|"Crime Map"|"Cases"|"Dashboard"}
-  Only include ACTION when genuinely useful, and it must be the last line, valid JSON, nothing after it."""
+ZIA_LOCATION_TAGS = {"City", "State", "Country", "Location"}
 
 
-def _detect_district(message, districts):
+def _zia_understand(app, message):
+    """
+    Runs the analyst's raw question through Catalyst Zia Text Analytics
+    (three Zia AI calls: sentiment, keyword extraction, NER). Never
+    raises — if Zia Services isn't enabled yet for this project, or a
+    call fails for any reason, we degrade gracefully and the assistant
+    still answers using the data context alone.
+    """
+    try:
+        zia = app.zia()
+        docs = [message[:1500]]  # Zia Text Analytics caps input at 1500 chars
+
+        sentiment_data = zia.get_sentiment_analysis(docs)
+        keyword_data = zia.get_keyword_extraction(docs)
+        ner_data = zia.get_NER_prediction(docs)
+
+        sentiment = ((sentiment_data or [{}])[0] or {}).get("document_sentiment", "")
+
+        kw = ((keyword_data or [{}])[0] or {}).get("keyword_extractor", {}) or {}
+        keywords = kw.get("keywords") or []
+        keyphrases = kw.get("keyphrases") or []
+
+        entities = (((ner_data or [{}])[0] or {}).get("ner", {}) or {}).get("general_entities") or []
+        location_entities = [e["token"] for e in entities if e.get("ner_tag") in ZIA_LOCATION_TAGS]
+
+        return {
+            "sentiment": sentiment,
+            "keywords": keywords[:6],
+            "keyphrases": keyphrases[:3],
+            "location_entities": location_entities,
+        }
+    except Exception as e:
+        logging.getLogger().warning(f"Zia text analytics unavailable, continuing without it: {e}")
+        return {"sentiment": "", "keywords": [], "keyphrases": [], "location_entities": []}
+
+
+def _compose_zia_reply(context, suggested_tab, zia_signals):
+    """
+    Deterministic natural-language reply, built only from facts already
+    present in `context` (never invented), lightly personalized using
+    the Zia AI signals (sentiment / keyphrase) so it doesn't read like
+    a static template every time.
+    """
+    if context.get("error"):
+        return ("I couldn't pull live data for that just now — try rephrasing, "
+                "or check the Dashboard directly."), ({"tab": suggested_tab} if suggested_tab else None)
+
+    lines = []
+    filt = [f for f in (context.get("filteredOnDistrict"), context.get("filteredOnCrimeType")) if f]
+    scope = " and ".join(filt) if filt else "your current access scope"
+
+    if "recentMatchingCases" in context:
+        cases = context["recentMatchingCases"]
+        if cases:
+            latest = cases[0]
+            lines.append(
+                f"Found {len(cases)} matching case(s) for {scope}. Most recent is "
+                f"{latest.get('caseNo') or 'an unlisted case no.'}, registered "
+                f"{latest.get('date') or 'on an unspecified date'}."
+            )
+        else:
+            lines.append(f"No matching cases found for {scope} in the records you can access.")
+
+    if "topRepeatOffenders" in context:
+        offenders = context["topRepeatOffenders"]
+        if offenders:
+            top = offenders[0]
+            stations = ", ".join(top.get("stations") or []) or "multiple stations"
+            lines.append(
+                f"Top repeat pattern: {top['name']}, linked to {top['caseCount']} case(s) "
+                f"across {stations}."
+            )
+        else:
+            lines.append("No repeat-offender network stands out in this scope yet.")
+
+    if not lines:
+        stats = context.get("dashboardStats") or {}
+        if stats:
+            highlights = ", ".join(f"{k}: {v}" for k, v in list(stats.items())[:3])
+            lines.append(f"Nothing specific matched, but your dashboard currently shows {highlights}.")
+        else:
+            lines.append(
+                "I don't have a live data match for that yet — try naming a district, "
+                "a crime type, or a case number."
+            )
+
+    if zia_signals.get("sentiment") == "Negative":
+        lines.insert(0, "Understood — flagging this as high priority.")
+
+    reply = " ".join(lines)
+    action = {"tab": suggested_tab} if suggested_tab else None
+    return reply, action
+
+
+def _detect_district(message, districts, zia_location_entities=None):
     msg_low = message.lower()
     for d in districts:
         if d["DistrictName"].lower() in msg_low:
             return d["DistrictID"], d["DistrictName"]
+    # Fallback: Zia AI's NER may catch a district name phrased in a way
+    # the plain substring match misses (e.g. mid-sentence punctuation).
+    for entity in (zia_location_entities or []):
+        entity_low = entity.lower()
+        for d in districts:
+            if d["DistrictName"].lower() == entity_low:
+                return d["DistrictID"], d["DistrictName"]
     return "", ""
 
 
@@ -1053,10 +1321,13 @@ def _detect_crime_subhead(message, crime_subheads):
     return "", ""
 
 
-def _build_assistant_context(app, officer, message):
+def _build_assistant_context(app, officer, message, zia_signals=None):
+    zia_signals = zia_signals or {}
     msg_low = message.lower()
     lookups = _lookups(app)
-    district_id, district_name = _detect_district(message, lookups["districts"])
+    district_id, district_name = _detect_district(
+        message, lookups["districts"], zia_signals.get("location_entities")
+    )
     subhead_id, subhead_name = _detect_crime_subhead(message, lookups["crime_subheads"])
 
     # RBAC: a station/district-scoped officer can't use the chat to ask
@@ -1109,86 +1380,29 @@ def ai_assistant(app, request, officer, audit):
     audit["resource_type"] = "ai_assistant_query"
     body = request.get_json(force=True) or {}
     message = (body.get("message") or "").strip()
-    history = body.get("history") or []
+    # `history` is accepted for API-compatibility with the previous
+    # (Gemini-based) client payload, but Zia's Text Analytics APIs are
+    # single-turn — the reply is composed fresh from live data on every
+    # call, so history isn't threaded into a model prompt here.
+    _history = body.get("history") or []
 
     if not message:
         return make_response(jsonify({"error": "message is required"}), 400)
 
-    api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key:
-        return make_response(jsonify({
-            "reply": "The AI assistant isn't configured yet — an admin needs to set GEMINI_API_KEY "
-                     "in Catalyst Console \u2192 Functions \u2192 ksp_intelli_q_function \u2192 Environment Variables.",
-            "action": None,
-        }), 200)
+    zia_signals = _zia_understand(app, message)
 
     try:
-        context, suggested_tab = _build_assistant_context(app, officer, message)
+        context, suggested_tab = _build_assistant_context(app, officer, message, zia_signals)
     except Exception as e:
         context, suggested_tab = {"error": f"context lookup failed: {e}"}, None
 
-    contents = []
-    for turn in history[-6:]:
-        role = "model" if turn.get("role") in ("ai", "model", "assistant") else "user"
-        text = (turn.get("text") or "").strip()
-        if text:
-            contents.append({"role": role, "parts": [{"text": text}]})
+    reply, action = _compose_zia_reply(context, suggested_tab, zia_signals)
 
-    contents.append({
-        "role": "user",
-        "parts": [{"text": f"CONTEXT (live data, current as of now):\n{json.dumps(context)}\n\nQuestion: {message}"}],
-    })
-
-    payload = {
-        "contents": contents,
-        "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
-        "generationConfig": {"temperature": 0.3, "maxOutputTokens": 400},
-    }
-
-    gemini_url = GEMINI_URL_TEMPLATE.format(model=GEMINI_MODEL)
-
-    try:
-        resp = None
-        for attempt in range(3):
-            resp = requests.post(
-                gemini_url,
-                headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
-                json=payload,
-                timeout=15,
-            )
-            if resp.status_code != 429:
-                break
-            time.sleep(1.5 * (attempt + 1))
-        resp.raise_for_status()
-        data = resp.json()
-        raw_text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
-    except requests.exceptions.HTTPError as e:
-        if e.response is not None and e.response.status_code == 429:
-            return make_response(jsonify({
-                "reply": "IntelliQ is getting a lot of requests right now — give it about a minute and ask again.",
-                "action": None,
-                "detail": str(e),
-            }), 200)
-        return make_response(jsonify({
-            "reply": "Couldn't reach the AI model just now. Try again in a moment.",
-            "action": None,
-            "detail": str(e),
-        }), 200)
-    except Exception as e:
-        return make_response(jsonify({
-            "reply": "Couldn't reach the AI model just now. Try again in a moment.",
-            "action": None,
-            "detail": str(e),
-        }), 200)
-
-    action = None
-    reply = raw_text
-    if "ACTION:" in raw_text:
-        reply_part, _, action_part = raw_text.rpartition("ACTION:")
-        reply = reply_part.strip()
-        try:
-            action = json.loads(action_part.strip())
-        except (ValueError, json.JSONDecodeError):
-            action = {"tab": suggested_tab} if suggested_tab else None
-
-    return make_response(jsonify({"reply": reply or raw_text, "action": action}), 200)
+    return make_response(jsonify({
+        "reply": reply,
+        "action": action,
+        "zia": {  # surfaced for the UI / demo; safe to ignore on the client
+            "sentiment": zia_signals.get("sentiment"),
+            "keywords": zia_signals.get("keywords"),
+        },
+    }), 200)

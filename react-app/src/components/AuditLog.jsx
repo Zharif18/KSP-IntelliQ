@@ -113,14 +113,14 @@ export default function AuditLog() {
             <tbody>
               {entries.map((e, i) => (
                 <tr key={i}>
-                  <td className="mono" style={{ fontFamily: "monospace" }}>{(e.Timestamp || "").replace("T", " ").replace("Z", "")}</td>
+                  <td className="mono" style={{ fontFamily: "monospace" }}>{(e.Time_stamp || "").replace("T", " ").replace("Z", "")}</td>
                   <td>{e.EmployeeName || "—"}</td>
                   <td>{e.RoleName}</td>
                   <td>{e.Action}</td>
                   <td className="mono" style={{ fontFamily: "monospace" }}>{e.Endpoint}</td>
                   <td>{e.ResourceType}{e.ResourceID ? ` · ${e.ResourceID}` : ""}</td>
                   <td>{e.RecordCount >= 0 ? e.RecordCount : "—"}</td>
-                  <td><span className={`load-pill ${RESULT_TONE[e.Result] || "sage"}`}>{e.Result}</span></td>
+                  <td><span className={`load-pill ${RESULT_TONE[e._Result] || "sage"}`}>{e._Result}</span></td>
                 </tr>
               ))}
             </tbody>

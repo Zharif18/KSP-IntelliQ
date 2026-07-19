@@ -73,23 +73,20 @@ async function callCatalystFunction(endpoint, fallback) {
 }
 
 const MOCK_STATS = { totalCrimes: 1284, openFirs: 96, solved: 812, activeInvestigations: 41 };
-const MOCK_TREND = [
-  { day: "Mon", crimes: 32 }, { day: "Tue", crimes: 41 }, { day: "Wed", crimes: 28 },
-  { day: "Thu", crimes: 55 }, { day: "Fri", crimes: 47 }, { day: "Sat", crimes: 63 }, { day: "Sun", crimes: 39 },
-];
-const MOCK_HOTSPOTS = [
-  { area: "Whitefield", risk: 78, type: "Vehicle Theft" },
-  { area: "Indiranagar", risk: 64, type: "Chain Snatching" },
-  { area: "Electronic City", risk: 52, type: "Burglary" },
-  { area: "Yeshwanthpur", risk: 45, type: "Assault" },
-];
-const MOCK_LOG = [
-  { time: "14:32", text: "FIR #1456 escalated to Priority 1 — Whitefield" },
-  { time: "13:58", text: "Pattern match: 3 burglaries linked, same MO — Indiranagar" },
-  { time: "13:41", text: "Patrol unit 12 dispatched — Electronic City" },
-  { time: "12:20", text: "New evidence uploaded to FIR #1402" },
-  { time: "11:05", text: "Hotspot forecast refreshed — 6 zones updated" },
-];
+
+// Hotspot Forecast, Incident Log, and 7-Day Trend are now live —
+// fetched from /get_hotspots, /get_incident_log, /get_crime_trend.
+// Same fetchJSON pattern CrimeMap.jsx already uses: no silent
+// fallback to fake data, real loading/error states instead, so the
+// panel never quietly shows placeholder numbers as if they were live.
+async function fetchJSON(endpoint, opts) {
+  const res = await fetch(`/server/ksp_intelli_q_function/${endpoint}`, {
+    credentials: "include",
+    ...opts,
+  });
+  if (!res.ok) throw new Error(`${endpoint} failed (${res.status})`);
+  return res.json();
+}
 
 function useLiveClock() {
   const [time, setTime] = useState(new Date());
@@ -127,6 +124,15 @@ export default function KSPIntelliQDashboard() {
   const [officer, setOfficer] = useState(null);
   const [accessDenied, setAccessDenied] = useState(null); // holds the message, or null
   const [stats, setStats] = useState(null);
+  const [hotspots, setHotspots] = useState([]);
+  const [hotspotsLoading, setHotspotsLoading] = useState(true);
+  const [hotspotsError, setHotspotsError] = useState(null);
+  const [incidentLog, setIncidentLog] = useState([]);
+  const [logLoading, setLogLoading] = useState(true);
+  const [logError, setLogError] = useState(null);
+  const [trend, setTrend] = useState([]);
+  const [trendLoading, setTrendLoading] = useState(true);
+  const [trendError, setTrendError] = useState(null);
   const [assistantOpen, setAssistantOpen] = useState(false);
   const [messages, setMessages] = useState([
     { from: "ai", text: "IntelliQ Assistant ready. Ask about a FIR, area, or suspect." },
@@ -156,6 +162,21 @@ export default function KSPIntelliQDashboard() {
   useEffect(() => {
     fetchOfficer();
     callCatalystFunction("get_dashboard_stats", MOCK_STATS).then(setStats);
+
+    fetchJSON("get_hotspots?limit=6")
+      .then((d) => setHotspots(d.hotspots || []))
+      .catch((err) => setHotspotsError(err.message))
+      .finally(() => setHotspotsLoading(false));
+
+    fetchJSON("get_incident_log?limit=8")
+      .then((d) => setIncidentLog(d.entries || []))
+      .catch((err) => setLogError(err.message))
+      .finally(() => setLogLoading(false));
+
+    fetchJSON("get_crime_trend?days=7")
+      .then((d) => setTrend(d.trend || []))
+      .catch((err) => setTrendError(err.message))
+      .finally(() => setTrendLoading(false));
   }, []);
 
   const handleLogout = () => {
@@ -477,30 +498,54 @@ export default function KSPIntelliQDashboard() {
           <CaseCard stamp="Predictive">
             <div className="section-title">Hotspot Forecast — District Grid</div>
             <div className="forecast-body">
-              {MOCK_HOTSPOTS.map((h) => (
-                <div className="hotspot-row" key={h.area}>
-                  <div>
-                    <div>{h.area}</div>
-                    <div style={{ color: "var(--muted)", fontSize: 11, fontWeight: 400 }}>{h.type}</div>
-                  </div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <div className="risk-track"><div className="risk-fill" style={{ width: `${h.risk}%` }} /></div>
-                    <span className="mono" style={{ fontSize: 11, color: "var(--gold-strong)", fontWeight: 600 }}>{h.risk}%</span>
-                  </div>
+              {hotspotsLoading ? (
+                <div style={{ color: "var(--muted)", fontSize: 12, padding: "8px 0" }}>Loading…</div>
+              ) : hotspotsError ? (
+                <div style={{ color: "#c17a7a", fontSize: 12, padding: "8px 0" }}>
+                  Couldn't load hotspot forecast: {hotspotsError}
                 </div>
-              ))}
+              ) : hotspots.length === 0 ? (
+                <div style={{ color: "var(--muted)", fontSize: 12, padding: "8px 0" }}>
+                  No case activity in your scope in the last 30 days.
+                </div>
+              ) : (
+                hotspots.map((h) => (
+                  <div className="hotspot-row" key={h.area}>
+                    <div>
+                      <div>{h.area}</div>
+                      <div style={{ color: "var(--muted)", fontSize: 11, fontWeight: 400 }}>{h.type}</div>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <div className="risk-track"><div className="risk-fill" style={{ width: `${h.risk}%` }} /></div>
+                      <span className="mono" style={{ fontSize: 11, color: "var(--gold-strong)", fontWeight: 600 }}>{h.risk}%</span>
+                    </div>
+                  </div>
+                ))
+              )}
             </div>
           </CaseCard>
 
           <CaseCard>
             <div className="section-title"><Radio size={11} style={{ verticalAlign: -1, marginRight: 5 }} />Incident Log</div>
             <div className="log-list">
-              {MOCK_LOG.map((l, i) => (
-                <div className="log-row" key={i}>
-                  <span className="log-time mono">{l.time}</span>
-                  <span className="log-text">{l.text}</span>
+              {logLoading ? (
+                <div style={{ color: "var(--muted)", fontSize: 12, padding: "8px 0" }}>Loading…</div>
+              ) : logError ? (
+                <div style={{ color: "#c17a7a", fontSize: 12, padding: "8px 0" }}>
+                  Couldn't load incident log: {logError}
                 </div>
-              ))}
+              ) : incidentLog.length === 0 ? (
+                <div style={{ color: "var(--muted)", fontSize: 12, padding: "8px 0" }}>
+                  No recent case activity in your scope.
+                </div>
+              ) : (
+                incidentLog.map((l, i) => (
+                  <div className="log-row" key={l.caseNo || i}>
+                    <span className="log-time mono">{l.time}</span>
+                    <span className="log-text">{l.text}</span>
+                  </div>
+                ))
+              )}
             </div>
           </CaseCard>
         </div>
@@ -508,15 +553,23 @@ export default function KSPIntelliQDashboard() {
         <div className="grid-2">
           <CaseCard>
             <div className="section-title">7-Day Crime Trend</div>
-            <ResponsiveContainer width="100%" height={200}>
-              <LineChart data={MOCK_TREND}>
-                <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" vertical={false} />
-                <XAxis dataKey="day" stroke="var(--muted)" fontSize={11} tickLine={false} axisLine={false} />
-                <YAxis stroke="var(--muted)" fontSize={11} tickLine={false} axisLine={false} />
-                <Tooltip contentStyle={{ background: "var(--panel-raised)", border: "1px solid var(--border)", borderRadius: 8, fontSize: 12, color: "var(--text)" }} />
-                <Line type="monotone" dataKey="crimes" stroke="var(--gold-strong)" strokeWidth={2.5} dot={{ r: 3, fill: "var(--wine)" }} />
-              </LineChart>
-            </ResponsiveContainer>
+            {trendLoading ? (
+              <div style={{ color: "var(--muted)", fontSize: 12, padding: "8px 0" }}>Loading…</div>
+            ) : trendError ? (
+              <div style={{ color: "#c17a7a", fontSize: 12, padding: "8px 0" }}>
+                Couldn't load crime trend: {trendError}
+              </div>
+            ) : (
+              <ResponsiveContainer width="100%" height={200}>
+                <LineChart data={trend}>
+                  <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" vertical={false} />
+                  <XAxis dataKey="day" stroke="var(--muted)" fontSize={11} tickLine={false} axisLine={false} />
+                  <YAxis stroke="var(--muted)" fontSize={11} tickLine={false} axisLine={false} />
+                  <Tooltip contentStyle={{ background: "var(--panel-raised)", border: "1px solid var(--border)", borderRadius: 8, fontSize: 12, color: "var(--text)" }} />
+                  <Line type="monotone" dataKey="crimes" stroke="var(--gold-strong)" strokeWidth={2.5} dot={{ r: 3, fill: "var(--wine)" }} />
+                </LineChart>
+              </ResponsiveContainer>
+            )}
           </CaseCard>
 
           <CaseCard stamp="Verified">
