@@ -115,7 +115,7 @@ function HeatmapLayer({ points }) {
   return null;
 }
 
-export default function CrimeMap() {
+export default function CrimeMap({ theme = "dark" }) {
   const [lookups, setLookups] = useState(null);
   const [cases, setCases] = useState([]);
   const [statusFilter, setStatusFilter] = useState(""); // holds a CaseStatusID, "" = all
@@ -135,14 +135,17 @@ export default function CrimeMap() {
   }, []);
 
   // Load cases whenever the status filter changes (needs lookups first,
-  // just so the filter chips below have names to show). Bumped the
-  // limit well past the old default of 50 — a heatmap/time-slider needs
-  // enough points to actually show a density pattern.
+  // just so the filter chips below have names to show). 300 is the hard
+  // ceiling here, not a stylistic choice — Zoho Catalyst's ZCQL rejects
+  // a "SELECT *" query asking for more than 300 rows, so search_case
+  // itself throws (500) if we ask for more, regardless of how many
+  // rows actually match. 300 is still well past the old default of 50
+  // and enough for the heatmap/time-slider to show a real pattern.
   useEffect(() => {
     if (!lookups) return;
     setLoading(true);
     setError(null);
-    const params = new URLSearchParams({ limit: "600" });
+    const params = new URLSearchParams({ limit: "300" });
     if (statusFilter) params.set("status_id", statusFilter);
     fetchJSON(`search_case?${params.toString()}`)
       .then((data) => setCases(data.results || []))
@@ -202,9 +205,6 @@ export default function CrimeMap() {
     <div className="crime-map-wrap">
       <style>{`
         .crime-map-wrap {
-          --ink: #0e1116; --panel: #171b23; --panel-raised: #212630;
-          --gold: #d4b073; --gold-strong: #e8c98d; --wine: #c17a7a; --sage: #7fb39c;
-          --text: #f3f1ea; --muted: #a8adba; --border: rgba(255,255,255,0.1);
           font-family: 'Inter', sans-serif; background: var(--ink); color: var(--text);
           border-radius: 12px; overflow: hidden; border: 1px solid var(--border);
         }
@@ -317,7 +317,7 @@ export default function CrimeMap() {
             </div>
             <MapContainer center={[12.9716, 77.5946]} zoom={11} style={{ height: "100%", width: "100%" }}>
               <TileLayer
-                url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
+                url={`https://{s}.basemaps.cartocdn.com/${theme === "light" ? "light_all" : "dark_all"}/{z}/{x}/{y}{r}.png`}
                 attribution='&copy; OpenStreetMap &copy; CARTO'
               />
               {viewMode === "heatmap" ? (

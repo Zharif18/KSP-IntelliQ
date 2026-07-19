@@ -38,10 +38,14 @@ const ALL_TABS = [
 function tabsForRole(accessRole) {
   const hidden = new Set();
   if (accessRole === "SCRB Analyst") {
-    // Statewide aggregates + NCRB export live here; no personnel roster
-    // and no live map/case-by-case work (that's field-role territory).
+    // Statewide aggregates + NCRB export live here. No personnel
+    // roster — get_officers 403s this role outright (rosters are
+    // operational, not analytical, data). Crime Map IS shown: it reads
+    // CaseMaster through the same search_case route every role uses,
+    // and CaseMaster has no name/PII columns (just IDs, status,
+    // lat/long) — so a statewide read-only view is exactly this role's
+    // STATE data_scope, not an overreach.
     hidden.add("Officers");
-    hidden.add("Crime Map");
   } else {
     // Field roles (Constable / SHO / SP) don't get the cross-district
     // Audit Log tab unless the backend itself would let them in —
@@ -493,7 +497,7 @@ export default function KSPIntelliQDashboard() {
       {/* MAIN */}
       <div className="main">
         {activeTab === "Crime Map" ? (
-          <CrimeMap />
+          <CrimeMap theme={theme} />
         ) : activeTab === "Network" ? (
           <NetworkGraph />
         ) : activeTab === "Cases" ? (

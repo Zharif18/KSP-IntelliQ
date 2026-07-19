@@ -52,9 +52,6 @@ export default function Officers() {
     <div className="off-mgmt">
       <style>{`
         .off-mgmt {
-          --ink: #0e1116; --panel: #171b23; --panel-raised: #212630;
-          --gold: #d4b073; --gold-strong: #e8c98d; --wine: #c17a7a; --sage: #7fb39c;
-          --text: #f3f1ea; --muted: #a8adba; --border: rgba(255,255,255,0.1);
           font-family: 'Inter', sans-serif; color: var(--text);
         }
         .off-card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px;

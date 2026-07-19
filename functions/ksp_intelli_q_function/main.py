@@ -121,6 +121,29 @@ def zcql_rows(app, table_name, query):
     return [r[table_name] for r in rows]
 
 
+# ZCQL hard-caps every SELECT at 300 rows per call (regardless of
+# columns selected) — a query with no LIMIT of its own doesn't get
+# "everything", it throws once the table backing it has more than 300
+# rows. Any unbounded query against a table that can plausibly grow
+# past 300 rows (CaseMaster, Accused, ...) needs to page through with
+# LIMIT {offset},300 and accumulate, rather than relying on ZCQL to
+# just hand back the whole table.
+ZCQL_MAX_PAGE = 300
+
+
+def zcql_rows_paginated(app, table_name, base_query):
+    all_rows = []
+    offset = 0
+    while True:
+        page_query = f"{base_query} LIMIT {offset},{ZCQL_MAX_PAGE}"
+        page = zcql_rows(app, table_name, page_query)
+        all_rows.extend(page)
+        if len(page) < ZCQL_MAX_PAGE:
+            break
+        offset += ZCQL_MAX_PAGE
+    return all_rows
+
+
 # ---------------------------------------------------------------------
 # Officer / RBAC context
 # ---------------------------------------------------------------------
@@ -479,7 +502,11 @@ def search_case(app, request, officer, audit):
     district_id = (request.args.get("district_id") or "").strip()
     crime_subhead_id = (request.args.get("crime_subhead_id") or "").strip()
     status_id = (request.args.get("status_id") or "").strip()
-    limit = int(request.args.get("limit") or 50)
+    # Clamped to 300: ZCQL rejects a "SELECT *" query asking for more
+    # than 300 rows outright (the query itself throws, not just a
+    # truncated result), so this has to be enforced here, not just
+    # trusted from the caller.
+    limit = min(int(request.args.get("limit") or 50), 300)
 
     cases = _search_cases(app, officer, district_id, crime_subhead_id, status_id, limit)
     audit["resource_type"] = "case_search"
@@ -713,13 +740,13 @@ def _network_graph(app, officer, district_id="", min_cases=1, limit_persons=120)
 
     scope_clause = _case_scope_clause(app, officer)
     case_where = f" WHERE {scope_clause}" if scope_clause else ""
-    case_rows = zcql_rows(app, "CaseMaster", f"SELECT CaseMasterID, PoliceStationID, CrimeMinorHeadID, CrimeMajorHeadID FROM CaseMaster{case_where}")
+    case_rows = zcql_rows_paginated(app, "CaseMaster", f"SELECT CaseMasterID, PoliceStationID, CrimeMinorHeadID, CrimeMajorHeadID FROM CaseMaster{case_where}")
     case_station = {c["CaseMasterID"]: c["PoliceStationID"] for c in case_rows}
     case_crime = {c["CaseMasterID"]: c.get("CrimeMinorHeadID") for c in case_rows}
     case_head = {c["CaseMasterID"]: c.get("CrimeMajorHeadID") for c in case_rows}
     scoped_case_ids = set(case_station.keys())
 
-    accused_rows = zcql_rows(app, "Accused", "SELECT AccusedMasterID, CaseMasterID, AccusedName, PersonKey, AgeYear FROM Accused")
+    accused_rows = zcql_rows_paginated(app, "Accused", "SELECT AccusedMasterID, CaseMasterID, AccusedName, PersonKey, AgeYear FROM Accused")
     accused_rows = [a for a in accused_rows if a["CaseMasterID"] in scoped_case_ids]
 
     unit_name = {u["UnitID"]: u["UnitName"] for u in zcql_rows(app, "Unit", "SELECT UnitID, UnitName FROM Unit")}
@@ -852,7 +879,7 @@ def _person_profile(app, officer, person_key):
 
     scope_clause = _case_scope_clause(app, officer)
     case_where = f" WHERE {scope_clause}" if scope_clause else ""
-    case_rows = zcql_rows(app, "CaseMaster",
+    case_rows = zcql_rows_paginated(app, "CaseMaster",
         f"SELECT CaseMasterID, CaseNo, PoliceStationID, CrimeMinorHeadID, CrimeMajorHeadID, "
         f"CaseStatusID, GravityOffenceID, CrimeRegisteredDate, IncidentFromDate FROM CaseMaster{case_where}")
     case_by_id = {c["CaseMasterID"]: c for c in case_rows}
@@ -993,9 +1020,9 @@ def _officers(app, officer, unit_id="", district_id=""):
             conditions.append(f"UnitID IN ({in_clause})")
 
     where_clause = f" WHERE {' AND '.join(conditions)}" if conditions else ""
-    employees = zcql_rows(app, "Employee", f"SELECT * FROM Employee{where_clause}")
+    employees = zcql_rows_paginated(app, "Employee", f"SELECT * FROM Employee{where_clause}")
 
-    case_rows = zcql_rows(app, "CaseMaster",
+    case_rows = zcql_rows_paginated(app, "CaseMaster",
         "SELECT PolicePersonID, CaseStatusID FROM CaseMaster WHERE CaseStatusID = 'STA1' OR CaseStatusID = 'STA2'")
     active_caseload = {}
     for c in case_rows:
@@ -1039,7 +1066,7 @@ def get_officers(app, request, officer, audit):
 def _reports(app, officer):
     scope_clause = _case_scope_clause(app, officer)
     where = f" WHERE {scope_clause}" if scope_clause else ""
-    cases = zcql_rows(app, "CaseMaster",
+    cases = zcql_rows_paginated(app, "CaseMaster",
         f"SELECT CaseMasterID, CrimeMajorHeadID, PoliceStationID, CaseStatusID, CrimeRegisteredDate FROM CaseMaster{where}")
     lookups = _lookups(app)
     head_name = {h["CrimeHeadID"]: h["CrimeGroupName"] for h in lookups["crime_heads"]}
@@ -1101,7 +1128,7 @@ def _hotspots(app, officer, limit=6, window_days=30):
     cutoff = (datetime.date.today() - datetime.timedelta(days=window_days)).isoformat()
     conditions = [c for c in [scope_clause, f"CrimeRegisteredDate >= '{cutoff}'"] if c]
     where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
-    cases = zcql_rows(app, "CaseMaster",
+    cases = zcql_rows_paginated(app, "CaseMaster",
         f"SELECT PoliceStationID, CrimeMinorHeadID FROM CaseMaster{where}")
 
     station_counts = Counter()
@@ -1177,7 +1204,7 @@ def _trend_alerts(app, officer, window_weeks=4, limit=8):
     cutoff = (datetime.date.today() - datetime.timedelta(days=lookback_days)).isoformat()
     conditions = [c for c in [scope_clause, f"CrimeRegisteredDate >= '{cutoff}'"] if c]
     where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
-    cases = zcql_rows(app, "CaseMaster",
+    cases = zcql_rows_paginated(app, "CaseMaster",
         f"SELECT PoliceStationID, CrimeMinorHeadID, CrimeRegisteredDate FROM CaseMaster{where}")
 
     today = datetime.date.today()
@@ -1324,7 +1351,7 @@ def _crime_trend(app, officer, days=7):
     start = today - datetime.timedelta(days=days - 1)
     conditions = [c for c in [scope_clause, f"CrimeRegisteredDate >= '{start.isoformat()}'"] if c]
     where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
-    cases = zcql_rows(app, "CaseMaster", f"SELECT CrimeRegisteredDate FROM CaseMaster{where}")
+    cases = zcql_rows_paginated(app, "CaseMaster", f"SELECT CrimeRegisteredDate FROM CaseMaster{where}")
 
     counts = {}
     for c in cases:
@@ -1361,11 +1388,11 @@ def get_audit_log(app, request, officer, audit):
     if not _require_scope_at_least(officer, "DISTRICT"):
         return make_response(jsonify({"error": "forbidden", "message": "Audit trail access requires SP level or above."}), 403)
 
-    limit = int(request.args.get("limit") or 200)
+    limit = min(int(request.args.get("limit") or 200), 300)
     conditions = []
     if officer["data_scope"] == "DISTRICT":
         unit_rows = zcql_rows(app, "Unit", f"SELECT UnitID FROM Unit WHERE DistrictID = '{officer['district_id']}'")
-        emp_rows = zcql_rows(app, "Employee", "SELECT EmployeeID, UnitID FROM Employee")
+        emp_rows = zcql_rows_paginated(app, "Employee", "SELECT EmployeeID, UnitID FROM Employee")
         emp_ids = [e["EmployeeID"] for e in emp_rows if e.get("UnitID") in {u["UnitID"] for u in unit_rows}]
         if emp_ids:
             in_clause = ", ".join(f"'{e}'" for e in emp_ids)
