@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { forceSimulation, forceLink, forceManyBody, forceCenter, forceCollide } from "d3-force";
-import { Search, SlidersHorizontal, X, MapPin, AlertTriangle } from "lucide-react";
+import { Search, SlidersHorizontal, X, MapPin, AlertTriangle, History, Clock, Gavel } from "lucide-react";
 
 /* ---------------------------------------------------------------------
    Calls the real backend route:
@@ -60,6 +60,9 @@ export default function NetworkGraph() {
   const [filtersOpen, setFiltersOpen] = useState(false);
 
   const [positions, setPositions] = useState({}); // id -> {x, y}
+  const [profile, setProfile] = useState(null);
+  const [profileLoading, setProfileLoading] = useState(false);
+  const [profileError, setProfileError] = useState(null);
   const simRef = useRef(null);
   const svgRef = useRef(null);
   const dragNode = useRef(null);
@@ -158,11 +161,20 @@ export default function NetworkGraph() {
     panState.current = { startX: ev.clientX, startY: ev.clientY, origin: { ...transform } };
   };
   const onPointerMove = (ev) => {
+    // The SVG is rendered at width="100%" (often not literally 900px wide),
+    // while all our math (node positions, transform.x/y) lives in the
+    // viewBox's 900x560 unit space. Screen pixels have to be rescaled by
+    // (viewBox size / actual rendered size) before they mean anything in
+    // that space — skipping this is what made nodes drift instead of
+    // tracking the cursor.
+    const rect = svgRef.current.getBoundingClientRect();
+    const scaleX = W / rect.width;
+    const scaleY = H / rect.height;
+
     if (dragNode.current) {
       const { id } = dragNode.current;
-      const rect = svgRef.current.getBoundingClientRect();
-      const x = (ev.clientX - rect.left - transform.x) / transform.k;
-      const y = (ev.clientY - rect.top - transform.y) / transform.k;
+      const x = ((ev.clientX - rect.left) * scaleX - transform.x) / transform.k;
+      const y = ((ev.clientY - rect.top) * scaleY - transform.y) / transform.k;
       setPositions((p) => ({ ...p, [id]: { x, y } }));
       if (simRef.current) {
         const n = simRef.current.nodes.find((n) => n.id === id);
@@ -172,9 +184,23 @@ export default function NetworkGraph() {
     }
     if (panState.current) {
       const { startX, startY, origin } = panState.current;
-      setTransform({ ...origin, x: origin.x + (ev.clientX - startX), y: origin.y + (ev.clientY - startY) });
+      setTransform({
+        ...origin,
+        x: origin.x + (ev.clientX - startX) * scaleX,
+        y: origin.y + (ev.clientY - startY) * scaleY,
+      });
     }
   };
+  const openProfile = (personKey) => {
+    setProfile(null);
+    setProfileError(null);
+    setProfileLoading(true);
+    fetchJSON(`get_person_profile?person_key=${encodeURIComponent(personKey)}`)
+      .then(setProfile)
+      .catch((err) => setProfileError(err.message))
+      .finally(() => setProfileLoading(false));
+  };
+
   const onPointerUp = () => {
     if (dragNode.current && simRef.current) {
       const n = simRef.current.nodes.find((n) => n.id === dragNode.current.id);
@@ -225,6 +251,31 @@ export default function NetworkGraph() {
         .net-chip { display: inline-block; background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
           padding: 3px 8px; font-size: 11px; color: var(--text); margin: 2px 4px 2px 0; }
         .net-empty { padding: 60px 20px; text-align: center; color: var(--muted); font-size: 13px; }
+        .net-profile-btn { display: flex; align-items: center; gap: 7px; margin-top: 4px; padding: 9px 12px;
+          border-radius: 8px; background: var(--gold); color: var(--ink); font-size: 12px; font-weight: 700;
+          cursor: pointer; }
+        .net-profile-btn:hover { background: var(--gold-strong); }
+        .profile-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.55); z-index: 2000;
+          display: flex; align-items: center; justify-content: center; padding: 24px; }
+        .profile-card { background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
+          width: 720px; max-width: 100%; max-height: 85vh; overflow-y: auto; padding: 26px 28px; position: relative; }
+        .profile-close { position: absolute; top: 16px; right: 16px; cursor: pointer; color: var(--muted); }
+        .profile-title { font-size: 17px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+        .profile-sub { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; margin: 4px 0 18px; }
+        .profile-stat-row { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 18px; }
+        .profile-stat { flex: 1; min-width: 130px; background: var(--panel-raised); border: 1px solid var(--border);
+          border-radius: 10px; padding: 12px 14px; }
+        .profile-stat-label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 5px; }
+        .profile-stat-value { font-size: 15px; font-weight: 700; color: var(--gold-strong); }
+        .profile-section-title { font-size: 11.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em;
+          color: var(--muted); margin: 18px 0 10px; }
+        .profile-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+        .profile-table th { text-align: left; padding: 8px 10px; color: var(--muted); font-size: 10px;
+          text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid var(--border); }
+        .profile-table td { padding: 9px 10px; border-bottom: 1px solid var(--border); }
+        .profile-table tr:last-child td { border-bottom: none; }
+        .profile-loading, .profile-error, .profile-suppressed { padding: 30px; text-align: center; color: var(--muted); font-size: 13px; }
+        .profile-error { color: var(--wine); }
       `}</style>
 
       {/* Toolbar */}
@@ -271,6 +322,7 @@ export default function NetworkGraph() {
             width="100%"
             height={H}
             viewBox={`0 0 ${W} ${H}`}
+            preserveAspectRatio="none"
             onWheel={onWheel}
             onPointerDown={onBgPointerDown}
             onPointerMove={onPointerMove}
@@ -350,6 +402,12 @@ export default function NetworkGraph() {
                     <AlertTriangle size={13} /> Appears across {selected.stations?.length || 1} jurisdiction(s)
                   </div>
                 )}
+                <div
+                  className="net-profile-btn"
+                  onClick={() => openProfile(selected.id)}
+                >
+                  <History size={13} /> View full profile &amp; MO pattern
+                </div>
               </>
             )}
             {selected.type === "location" && (
@@ -360,6 +418,90 @@ export default function NetworkGraph() {
           </div>
         )}
       </div>
+
+      {/* REPEAT OFFENDER / MO PROFILE — opened from the side panel's
+          "View full profile" button. Pulls every incident tied to this
+          PersonKey across jurisdictions from /get_person_profile. */}
+      {(profileLoading || profile || profileError) && (
+        <div className="profile-overlay" onClick={() => { setProfile(null); setProfileError(null); }}>
+          <div className="profile-card" onClick={(e) => e.stopPropagation()}>
+            <X className="profile-close" size={18} onClick={() => { setProfile(null); setProfileError(null); }} />
+            {profileLoading ? (
+              <div className="profile-loading">Building offender profile…</div>
+            ) : profileError ? (
+              <div className="profile-error">Couldn't load profile: {profileError}</div>
+            ) : (
+              <>
+                <div className="profile-title"><History size={16} /> {profile.label}</div>
+                <div className="profile-sub">
+                  {profile.repeatOffender ? "Repeat Offender Profile" : "Offender Profile"}
+                  {profile.districts.length > 0 && ` · ${profile.districts.join(", ")}`}
+                </div>
+
+                <div className="profile-stat-row">
+                  <div className="profile-stat">
+                    <div className="profile-stat-label">Linked Cases</div>
+                    <div className="profile-stat-value">{profile.caseCount}</div>
+                  </div>
+                  <div className="profile-stat">
+                    <div className="profile-stat-label">Jurisdictions</div>
+                    <div className="profile-stat-value">{profile.jurisdictions.length}</div>
+                  </div>
+                  <div className="profile-stat">
+                    <div className="profile-stat-label">Dominant MO</div>
+                    <div className="profile-stat-value" style={{ fontSize: 13 }}>{profile.modusOperandi.dominantCrimeType}</div>
+                  </div>
+                  <div className="profile-stat">
+                    <div className="profile-stat-label"><Clock size={10} style={{ verticalAlign: -1 }} /> Typical Time</div>
+                    <div className="profile-stat-value" style={{ fontSize: 13 }}>{profile.modusOperandi.dominantTimeBand}</div>
+                  </div>
+                </div>
+
+                <div className="profile-section-title">Modus Operandi Breakdown</div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 4 }}>
+                  {profile.modusOperandi.crimeTypeBreakdown.map((c) => (
+                    <span key={c.label} className="net-chip">{c.label} × {c.count}</span>
+                  ))}
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
+                  {profile.modusOperandi.timeBandBreakdown.map((b) => (
+                    <span key={b.label} className="net-chip"><Clock size={10} style={{ verticalAlign: -1, marginRight: 3 }} />{b.label} × {b.count}</span>
+                  ))}
+                </div>
+                <div style={{ marginTop: 8 }}>
+                  <span className="net-chip"><Gavel size={10} style={{ verticalAlign: -1, marginRight: 3 }} />Typical gravity: {profile.modusOperandi.dominantGravity}</span>
+                </div>
+
+                <div className="profile-section-title">Incident Trail</div>
+                {profile.detailSuppressed ? (
+                  <div className="profile-suppressed">
+                    Incident-level detail is outside this role's data scope — aggregate MO pattern only.
+                  </div>
+                ) : (
+                  <table className="profile-table">
+                    <thead>
+                      <tr><th>Case No</th><th>Date</th><th>Station</th><th>District</th><th>Crime Type</th><th>Time Band</th><th>Status</th></tr>
+                    </thead>
+                    <tbody>
+                      {profile.incidents.map((inc) => (
+                        <tr key={inc.caseId}>
+                          <td className="mono">{inc.caseNo || inc.caseId}</td>
+                          <td>{inc.date}</td>
+                          <td>{inc.station}</td>
+                          <td>{inc.district}</td>
+                          <td>{inc.crimeType}</td>
+                          <td>{inc.timeBand}</td>
+                          <td>{inc.status}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

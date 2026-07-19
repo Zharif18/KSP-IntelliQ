@@ -73,11 +73,13 @@ def handler(request: Request):
             ("/update_case_status", "PUT"): update_case_status,
             ("/get_case_detail", "GET"): get_case_detail,
             ("/get_network_graph", "GET"): get_network_graph,
+            ("/get_person_profile", "GET"): get_person_profile,
             ("/get_officers", "GET"): get_officers,
             ("/get_reports", "GET"): get_reports,
             ("/ai_assistant", "POST"): ai_assistant,
             ("/get_audit_log", "GET"): get_audit_log,
             ("/get_hotspots", "GET"): get_hotspots,
+            ("/get_trend_alerts", "GET"): get_trend_alerts,
             ("/get_incident_log", "GET"): get_incident_log,
             ("/get_crime_trend", "GET"): get_crime_trend,
         }
@@ -659,7 +661,9 @@ def get_case_detail(app, request, officer, audit):
         label, redacted = _redact_victim(pk, c["ComplainantName"], c.get("AgeYear"), crime_head_id, officer, viewer_has_case_access)
         complainant_out.append({
             "id": c["ComplainantID"], "name": label, "redacted": redacted,
-            "age": None if redacted else c.get("AgeYear"), "occupation": c.get("Occupation"), "gender": c.get("GenderID"),
+            "age": None if redacted else c.get("AgeYear"),
+            "occupation": None if redacted else c.get("Occupation"),
+            "gender": c.get("GenderID"),
         })
 
     audit["record_count"] = len(accused_out) + len(victim_out) + len(complainant_out)
@@ -808,6 +812,145 @@ def get_network_graph(app, request, officer, audit):
     audit["resource_type"] = "network_graph"
     audit["record_count"] = len(result["nodes"])
     return make_response(jsonify(result), 200)
+
+
+# ---------------------------------------------------------------------
+# GET /get_person_profile?person_key=...
+#
+# Repeat-offender / MO profile: every incident tied to one PersonKey,
+# across every jurisdiction, but ONLY within the caller's own case
+# scope — same _case_scope_clause as every other case-touching route,
+# so a STATION-scope SHO still can't pull a full cross-district trail
+# on someone whose other cases sit outside their access.
+#
+# Redaction mirrors _network_graph exactly:
+#   - juvenile -> label always masked (Sec 74 JJ Act), but the
+#     incident trail/MO pattern is still shown to the investigating
+#     side — the Act protects identity, not case-linkage visibility.
+#   - officer.can_view_pii == False (SCRB Analyst) -> label masked AND
+#     the case-by-case incident list is suppressed entirely; the
+#     analyst still gets the aggregate MO pattern, never the trail.
+# ---------------------------------------------------------------------
+TIME_BANDS = [
+    (0, 6, "Late Night (12–6am)"),
+    (6, 12, "Morning (6am–12pm)"),
+    (12, 17, "Afternoon (12–5pm)"),
+    (17, 21, "Evening (5–9pm)"),
+    (21, 24, "Night (9pm–12am)"),
+]
+
+
+def _time_band(hour):
+    for lo, hi, label in TIME_BANDS:
+        if lo <= hour < hi:
+            return label
+    return "Unknown"
+
+
+def _person_profile(app, officer, person_key):
+    from collections import Counter
+
+    scope_clause = _case_scope_clause(app, officer)
+    case_where = f" WHERE {scope_clause}" if scope_clause else ""
+    case_rows = zcql_rows(app, "CaseMaster",
+        f"SELECT CaseMasterID, CaseNo, PoliceStationID, CrimeMinorHeadID, CrimeMajorHeadID, "
+        f"CaseStatusID, GravityOffenceID, CrimeRegisteredDate, IncidentFromDate FROM CaseMaster{case_where}")
+    case_by_id = {c["CaseMasterID"]: c for c in case_rows}
+
+    accused_rows = zcql_rows(app, "Accused",
+        f"SELECT AccusedMasterID, CaseMasterID, AccusedName, PersonKey, AgeYear FROM Accused WHERE PersonKey = '{person_key}'")
+    entries = [a for a in accused_rows if a["CaseMasterID"] in case_by_id]
+    if not entries:
+        return None
+
+    lookups = _lookups(app)
+    unit_name = {u["UnitID"]: u["UnitName"] for u in lookups["units"]}
+    unit_district = {u["UnitID"]: u["DistrictID"] for u in lookups["units"]}
+    district_name = {d["DistrictID"]: d["DistrictName"] for d in lookups["districts"]}
+    subhead_name = {s["CrimeSubHeadID"]: s["CrimeHeadName"] for s in lookups["crime_subheads"]}
+    status_name = {s["CaseStatusID"]: s["CaseStatusName"] for s in lookups["statuses"]}
+    gravity_name = {g["GravityOffenceID"]: g.get("LookupValue", g["GravityOffenceID"])
+                    for g in zcql_rows(app, "GravityOffence", "SELECT GravityOffenceID, LookupValue FROM GravityOffence")}
+
+    # Same "juvenile in ANY linked case" rule the network graph uses.
+    oldest_age = next((e.get("AgeYear") for e in entries if _is_juvenile(e.get("AgeYear"))), entries[-1].get("AgeYear"))
+    label, redacted = _redact_accused(person_key, entries[-1]["AccusedName"], oldest_age, officer)
+    detail_allowed = officer["can_view_pii"]  # only the no-PII tier loses the incident-level trail
+
+    incidents = []
+    crime_counter, band_counter, gravity_counter = Counter(), Counter(), Counter()
+    station_set, district_set = set(), set()
+
+    for e in entries:
+        case = case_by_id[e["CaseMasterID"]]
+        station = case.get("PoliceStationID")
+        crime = subhead_name.get(case.get("CrimeMinorHeadID"), "Unknown")
+        gravity = gravity_name.get(case.get("GravityOffenceID"), "Unknown")
+        station_set.add(station)
+        district_set.add(unit_district.get(station))
+        crime_counter[crime] += 1
+        gravity_counter[gravity] += 1
+
+        hour = None
+        ts = case.get("IncidentFromDate")
+        if ts and "T" in str(ts):
+            try:
+                hour = int(str(ts).split("T")[1][:2])
+            except ValueError:
+                hour = None
+        band = _time_band(hour) if hour is not None else "Unknown"
+        band_counter[band] += 1
+
+        if detail_allowed:
+            incidents.append({
+                "caseId": e["CaseMasterID"],
+                "caseNo": case.get("CaseNo"),
+                "date": case.get("CrimeRegisteredDate"),
+                "station": unit_name.get(station, station),
+                "district": district_name.get(unit_district.get(station), "—"),
+                "crimeType": crime,
+                "gravity": gravity,
+                "status": status_name.get(case.get("CaseStatusID"), "Unknown"),
+                "timeBand": band,
+            })
+
+    def top(counter):
+        return counter.most_common(1)[0][0] if counter else "—"
+
+    return {
+        "personKey": person_key,
+        "label": label,
+        "redacted": redacted,
+        "caseCount": len(entries),
+        "repeatOffender": len(entries) >= 2,
+        "detailSuppressed": not detail_allowed,
+        "jurisdictions": sorted({unit_name.get(s, s) for s in station_set if s}),
+        "districts": sorted({district_name.get(d, d) for d in district_set if d}),
+        "modusOperandi": {
+            "dominantCrimeType": top(crime_counter),
+            "crimeTypeBreakdown": [{"label": k, "count": v} for k, v in crime_counter.most_common()],
+            "dominantTimeBand": top(band_counter),
+            "timeBandBreakdown": [{"label": k, "count": v} for k, v in band_counter.most_common()],
+            "dominantGravity": top(gravity_counter),
+        },
+        "incidents": sorted(incidents, key=lambda r: r.get("date") or "", reverse=True),
+    }
+
+
+def get_person_profile(app, request, officer, audit):
+    person_key = (request.args.get("person_key") or "").strip()
+    audit["resource_type"] = "person_profile"
+    audit["resource_id"] = person_key
+    if not person_key:
+        return make_response(jsonify({"error": "person_key is required"}), 400)
+    profile = _person_profile(app, officer, person_key)
+    if profile is None:
+        return make_response(jsonify({
+            "error": "not_found",
+            "message": "No incidents for this person within your access scope.",
+        }), 404)
+    audit["record_count"] = profile["caseCount"]
+    return make_response(jsonify(profile), 200)
 
 
 # ---------------------------------------------------------------------
@@ -1002,6 +1145,112 @@ def get_hotspots(app, request, officer, audit):
 
 
 # ---------------------------------------------------------------------
+# GET /get_trend_alerts?window_weeks=4&limit=8
+#
+# "Emerging trend" detection: for every (station, crime-category) pair
+# inside the caller's own scope, compares THIS week's case count against
+# a rolling baseline built from the preceding `window_weeks` complete
+# weeks (mean + population std-dev), and flags the pair as an alert
+# when the current week is a statistically unusual spike — a simple
+# z-score, not a trained model, but genuinely computed from live scoped
+# data every time (no hardcoded thresholds pretending to be "AI").
+#
+# z = (current_week_count - baseline_mean) / baseline_std
+#   - baseline_std of 0 (a category that never happened before in this
+#     window) is treated specially: any current activity at all is
+#     already the signal, so it's flagged with a synthetic high z
+#     rather than divided-by-zero or silently skipped.
+#   - pairs with too few historical data points to mean anything
+#     (fewer than MIN_SAMPLE total incidents across the whole window)
+#     are excluded — a single case in an otherwise-empty bucket is
+#     noise, not a trend.
+# ---------------------------------------------------------------------
+MIN_TREND_SAMPLE = 3
+TREND_Z_THRESHOLD = 1.5
+
+
+def _trend_alerts(app, officer, window_weeks=4, limit=8):
+    from collections import defaultdict
+
+    scope_clause = _case_scope_clause(app, officer)
+    lookback_days = (window_weeks + 1) * 7
+    cutoff = (datetime.date.today() - datetime.timedelta(days=lookback_days)).isoformat()
+    conditions = [c for c in [scope_clause, f"CrimeRegisteredDate >= '{cutoff}'"] if c]
+    where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+    cases = zcql_rows(app, "CaseMaster",
+        f"SELECT PoliceStationID, CrimeMinorHeadID, CrimeRegisteredDate FROM CaseMaster{where}")
+
+    today = datetime.date.today()
+
+    def week_index(date_str):
+        # 0 = current (partial) week, 1 = last complete week, 2 = the one
+        # before that, etc. — buckets by whole weeks back from today.
+        try:
+            d = datetime.date.fromisoformat(str(date_str)[:10])
+        except ValueError:
+            return None
+        return (today - d).days // 7
+
+    # buckets[(station, subhead)][week_index] = count
+    buckets = defaultdict(lambda: defaultdict(int))
+    for c in cases:
+        sid, subhead = c.get("PoliceStationID"), c.get("CrimeMinorHeadID")
+        if not sid or not subhead:
+            continue
+        wk = week_index(c.get("CrimeRegisteredDate"))
+        if wk is None or wk > window_weeks:
+            continue
+        buckets[(sid, subhead)][wk] += 1
+
+    lookups = _lookups(app)
+    unit_name = {u["UnitID"]: u["UnitName"] for u in lookups["units"]}
+    subhead_name = {s["CrimeSubHeadID"]: s["CrimeHeadName"] for s in lookups["crime_subheads"]}
+
+    alerts = []
+    for (sid, subhead), by_week in buckets.items():
+        current = by_week.get(0, 0)
+        history = [by_week.get(w, 0) for w in range(1, window_weeks + 1)]
+        total_sample = current + sum(history)
+        if total_sample < MIN_TREND_SAMPLE:
+            continue
+
+        mean = sum(history) / len(history) if history else 0
+        variance = sum((h - mean) ** 2 for h in history) / len(history) if history else 0
+        std = variance ** 0.5
+
+        if std == 0:
+            if current <= mean:
+                continue
+            z = 3.0 if current > 0 and mean == 0 else (current - mean)
+        else:
+            z = (current - mean) / std
+
+        if z < TREND_Z_THRESHOLD or current <= mean:
+            continue
+
+        alerts.append({
+            "area": unit_name.get(sid, sid),
+            "crimeType": subhead_name.get(subhead, "Unknown"),
+            "currentCount": current,
+            "baselineAvg": round(mean, 1),
+            "zScore": round(z, 2),
+            "severity": "critical" if z >= 2.5 else "elevated",
+        })
+
+    alerts.sort(key=lambda a: -a["zScore"])
+    return alerts[:limit]
+
+
+def get_trend_alerts(app, request, officer, audit):
+    audit["resource_type"] = "trend_alerts"
+    window_weeks = int(request.args.get("window_weeks") or 4)
+    limit = int(request.args.get("limit") or 8)
+    result = _trend_alerts(app, officer, window_weeks=window_weeks, limit=limit)
+    audit["record_count"] = len(result)
+    return make_response(jsonify({"alerts": result}), 200)
+
+
+# ---------------------------------------------------------------------
 # GET /get_incident_log?limit=
 #
 # Replaces the frontend's old MOCK_LOG. Deliberately built from the
@@ -1161,8 +1410,9 @@ def _write_audit_log(app, officer, request, audit, response):
     except Exception:
         pass
 
+    ist_now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=5, minutes=30))).strftime("%Y-%m-%d %H:%M:%S")
     row_data = {
-        "Time_stamp": datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+        "Time_stamp": ist_now,
         "EmployeeID": officer.get("employee_id") or "",
         "EmployeeName": officer.get("name") or "",
         "RoleName": officer.get("role_name") or "Unassigned",

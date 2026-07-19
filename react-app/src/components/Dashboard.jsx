@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import {
   Shield, FileText, Users, Map, BarChart3, MessageSquare,
-  Search, Bell, Send, Radio, ChevronLeft, Sun, Moon, LogOut, Share2, ShieldAlert
+  Search, Bell, Send, Radio, ChevronLeft, Sun, Moon, LogOut, Share2, ShieldAlert, AlertTriangle
 } from "lucide-react";
 import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid
@@ -133,6 +133,9 @@ export default function KSPIntelliQDashboard() {
   const [trend, setTrend] = useState([]);
   const [trendLoading, setTrendLoading] = useState(true);
   const [trendError, setTrendError] = useState(null);
+  const [alerts, setAlerts] = useState([]);
+  const [alertsLoading, setAlertsLoading] = useState(true);
+  const [alertsError, setAlertsError] = useState(null);
   const [assistantOpen, setAssistantOpen] = useState(false);
   const [messages, setMessages] = useState([
     { from: "ai", text: "IntelliQ Assistant ready. Ask about a FIR, area, or suspect." },
@@ -177,6 +180,11 @@ export default function KSPIntelliQDashboard() {
       .then((d) => setTrend(d.trend || []))
       .catch((err) => setTrendError(err.message))
       .finally(() => setTrendLoading(false));
+
+    fetchJSON("get_trend_alerts?window_weeks=4&limit=8")
+      .then((d) => setAlerts(d.alerts || []))
+      .catch((err) => setAlertsError(err.message))
+      .finally(() => setAlertsLoading(false));
   }, []);
 
   const handleLogout = () => {
@@ -374,6 +382,22 @@ export default function KSPIntelliQDashboard() {
         .stat-label { color: var(--muted); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; }
 
         .grid-2 { display: grid; grid-template-columns: 1.3fr 1fr; gap: 16px; margin-bottom: 20px; }
+        .grid-1 { display: grid; grid-template-columns: 1fr; gap: 16px; margin-bottom: 20px; }
+
+        .tone-alert { border-color: rgba(193,122,122,0.4); }
+        .alert-row { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+        .alert-row:last-child { border-bottom: none; }
+        .alert-pulse { position: relative; width: 9px; height: 9px; border-radius: 50%; background: var(--wine);
+          flex-shrink: 0; box-shadow: 0 0 0 0 rgba(193,122,122,0.6); animation: alert-pulse-anim 1.8s infinite; }
+        .alert-pulse.critical { background: #e34d4d; box-shadow: 0 0 0 0 rgba(227,77,77,0.7); animation-duration: 1.1s; }
+        @keyframes alert-pulse-anim {
+          0% { box-shadow: 0 0 0 0 rgba(193,122,122,0.55); }
+          70% { box-shadow: 0 0 0 9px rgba(193,122,122,0); }
+          100% { box-shadow: 0 0 0 0 rgba(193,122,122,0); }
+        }
+        .alert-badge { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em;
+          padding: 4px 10px; border-radius: 20px; background: rgba(212,176,115,0.14); color: var(--gold-strong); flex-shrink: 0; }
+        .alert-badge.critical { background: rgba(227,77,77,0.16); color: #e88a8a; }
 
         .forecast-body { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
         .hotspot-row { display: flex; align-items: center; justify-content: space-between; padding: 10px 0;
@@ -587,6 +611,46 @@ export default function KSPIntelliQDashboard() {
                 <div>Active Field Cases</div>
                 <div className="mono" style={{ color: "var(--gold-strong)", fontWeight: 700 }}>{stats?.activeInvestigations ?? "—"}</div>
               </div>
+            </div>
+          </CaseCard>
+        </div>
+
+        <div className="grid-1">
+          <CaseCard className={alerts.length ? "tone-alert" : ""}>
+            <div className="section-title">
+              <AlertTriangle size={13} style={{ verticalAlign: -2, marginRight: 6, color: "var(--wine)" }} />
+              Emerging Trend Alerts
+              <span style={{ marginLeft: 8, fontSize: 10.5, color: "var(--muted)", fontWeight: 400, textTransform: "none", letterSpacing: 0 }}>
+                this week vs. 4-week rolling average
+              </span>
+            </div>
+            <div className="forecast-body">
+              {alertsLoading ? (
+                <div style={{ color: "var(--muted)", fontSize: 12, padding: "8px 0" }}>Scanning for anomalies…</div>
+              ) : alertsError ? (
+                <div style={{ color: "#c17a7a", fontSize: 12, padding: "8px 0" }}>
+                  Couldn't load trend alerts: {alertsError}
+                </div>
+              ) : alerts.length === 0 ? (
+                <div style={{ color: "var(--muted)", fontSize: 12, padding: "8px 0" }}>
+                  No category in your scope is currently spiking above its rolling baseline.
+                </div>
+              ) : (
+                alerts.map((a, i) => (
+                  <div className="alert-row" key={`${a.area}-${a.crimeType}-${i}`}>
+                    <span className={`alert-pulse ${a.severity === "critical" ? "critical" : ""}`} />
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontWeight: 600 }}>{a.crimeType} — {a.area}</div>
+                      <div style={{ color: "var(--muted)", fontSize: 11 }}>
+                        {a.currentCount} this week vs. avg {a.baselineAvg} · z = {a.zScore}
+                      </div>
+                    </div>
+                    <span className={`alert-badge ${a.severity === "critical" ? "critical" : ""}`}>
+                      {a.severity === "critical" ? "Critical" : "Elevated"}
+                    </span>
+                  </div>
+                ))
+              )}
             </div>
           </CaseCard>
         </div>
