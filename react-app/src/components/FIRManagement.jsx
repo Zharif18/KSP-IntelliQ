@@ -1,5 +1,5 @@
-import { useState, useEffect } from "react";
-import { Search, Plus, X, FileText, Lock, Eye } from "lucide-react";
+import { useState, useEffect, useRef } from "react";
+import { Search, Plus, X, FileText, Lock, Eye, Sparkles, Mic, Square, Link2, MapPin, User } from "lucide-react";
 
 /* ---------------------------------------------------------------------
    Calls the real backend routes:
@@ -49,12 +49,30 @@ export default function FIRManagement() {
   const [detailError, setDetailError] = useState(null);
   const [detailForbidden, setDetailForbidden] = useState(false);
 
+  // FIR Text Mining (entity extraction on the Brief Facts narrative)
+  const [extraction, setExtraction] = useState(null);
+  const [extracting, setExtracting] = useState(false);
+  const [extractionError, setExtractionError] = useState(null);
+
+  // Multilingual voice-to-FIR (Web Speech API — browser-native, no server call)
+  const [listening, setListening] = useState(false);
+  const [voiceLang, setVoiceLang] = useState("en-IN");
+  const [voiceError, setVoiceError] = useState(null);
+  const recognitionRef = useRef(null);
+
+  // Duplicate/Linked FIR Detection
+  const [linkedMatches, setLinkedMatches] = useState(null);
+  const [linkedLoading, setLinkedLoading] = useState(false);
+  const [linkedError, setLinkedError] = useState(null);
+
   const openCaseDetail = (caseMasterId) => {
     setDetailCaseId(caseMasterId);
     setDetail(null);
     setDetailError(null);
     setDetailForbidden(false);
     setDetailLoading(true);
+    setLinkedMatches(null);
+    setLinkedError(null);
     fetch(`/server/ksp_intelli_q_function/get_case_detail?case_master_id=${encodeURIComponent(caseMasterId)}`, {
       credentials: "include",
     })
@@ -76,6 +94,81 @@ export default function FIRManagement() {
     setDetail(null);
     setDetailError(null);
     setDetailForbidden(false);
+    setLinkedMatches(null);
+    setLinkedError(null);
+  };
+
+  const checkLinkedFirs = () => {
+    if (!detailCaseId) return;
+    setLinkedMatches(null);
+    setLinkedError(null);
+    setLinkedLoading(true);
+    fetchJSON(`get_linked_fir_matches?case_master_id=${encodeURIComponent(detailCaseId)}`)
+      .then((data) => setLinkedMatches(data.matches || []))
+      .catch((err) => setLinkedError(err.message))
+      .finally(() => setLinkedLoading(false));
+  };
+
+  // --- FIR Text Mining: send the Brief Facts narrative to Zia NER +
+  // keyword extraction and surface entities / a suggested crime type
+  // and district for the officer to confirm, never auto-submitted.
+  const runExtraction = async () => {
+    if (!form.brief_facts.trim()) return;
+    setExtracting(true);
+    setExtractionError(null);
+    try {
+      const data = await fetchJSON("extract_fir_entities", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: form.brief_facts }),
+      });
+      if (data.error) throw new Error(data.error);
+      setExtraction(data);
+    } catch (err) {
+      setExtractionError(err.message);
+    } finally {
+      setExtracting(false);
+    }
+  };
+
+  const applySuggestedCrimeType = () => {
+    if (extraction?.suggestedCrimeSubheadId) {
+      setForm((f) => ({ ...f, crime_subhead_id: extraction.suggestedCrimeSubheadId }));
+    }
+  };
+
+  // --- Multilingual voice-to-FIR: browser-native Web Speech API, no
+  // server round-trip. 'en-IN' / 'kn-IN' cover English and Kannada
+  // dictation; support depends on the browser (best in Chrome).
+  const toggleListening = () => {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      setVoiceError("Voice input isn't supported in this browser — try Chrome.");
+      return;
+    }
+    if (listening) {
+      recognitionRef.current?.stop();
+      return;
+    }
+    setVoiceError(null);
+    const recognition = new SpeechRecognition();
+    recognition.lang = voiceLang;
+    recognition.interimResults = false;
+    recognition.continuous = true;
+    recognition.onresult = (event) => {
+      let transcript = "";
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        transcript += event.results[i][0].transcript;
+      }
+      if (transcript.trim()) {
+        setForm((f) => ({ ...f, brief_facts: (f.brief_facts ? f.brief_facts + " " : "") + transcript.trim() }));
+      }
+    };
+    recognition.onerror = (event) => setVoiceError(`Voice input error: ${event.error}`);
+    recognition.onend = () => setListening(false);
+    recognitionRef.current = recognition;
+    recognition.start();
+    setListening(true);
   };
 
   useEffect(() => {
@@ -111,6 +204,14 @@ export default function FIRManagement() {
   const statusName = (id) => lookups?.statuses.find((s) => s.CaseStatusID === id)?.CaseStatusName || "—";
   const districtOfUnit = (unitId) => lookups?.units.find((u) => u.UnitID === unitId)?.DistrictID;
 
+  const closeForm = () => {
+    setShowForm(false);
+    if (listening) recognitionRef.current?.stop();
+    setExtraction(null);
+    setExtractionError(null);
+    setVoiceError(null);
+  };
+
   const submitFir = async () => {
     if (!form.crime_subhead_id || !form.police_station_id || !officer) return;
     setSubmitting(true);
@@ -126,7 +227,7 @@ export default function FIRManagement() {
         }),
       });
       if (res.error) throw new Error(res.error);
-      setShowForm(false);
+      closeForm();
       setForm(EmptyForm());
       runSearch();
     } catch (err) {
@@ -189,6 +290,33 @@ export default function FIRManagement() {
           font-family: inherit; box-sizing: border-box; }
         .field-textarea { resize: vertical; min-height: 60px; }
         .modal-actions { display: flex; gap: 8px; margin-top: 18px; }
+
+        .field-label-row { display: flex; align-items: center; justify-content: space-between; margin-top: 12px; margin-bottom: 5px; }
+        .fir-voice-controls { display: flex; gap: 6px; align-items: center; }
+        .fir-voice-lang { background: var(--panel-raised); border: 1px solid var(--border); border-radius: 6px;
+          color: var(--text); font-size: 10.5px; padding: 3px 5px; outline: none; }
+        .fir-mic-btn { display: flex; align-items: center; gap: 4px; background: var(--panel-raised); border: 1px solid var(--border);
+          border-radius: 6px; padding: 4px 9px; font-size: 10.5px; color: var(--text); cursor: pointer; font-weight: 600; }
+        .fir-mic-btn:hover { border-color: var(--gold); color: var(--gold-strong); }
+        .fir-mic-btn.recording { background: var(--wine); border-color: var(--wine); color: #fff; }
+        .fir-extract-row { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+        .fir-inline-note { font-size: 10.5px; color: var(--muted); margin-top: 4px; }
+        .fir-inline-note.error { color: var(--wine); }
+        .fir-extraction-panel { margin-top: 10px; background: var(--panel-raised); border: 1px solid var(--border);
+          border-radius: 8px; padding: 12px; }
+        .fir-extract-suggestion { display: flex; align-items: center; justify-content: space-between; gap: 10px;
+          font-size: 11.5px; margin-bottom: 10px; flex-wrap: wrap; }
+        .fir-apply-btn { background: var(--gold); color: var(--ink); border-radius: 6px; padding: 4px 9px;
+          font-size: 10.5px; font-weight: 700; cursor: pointer; white-space: nowrap; }
+        .fir-apply-btn:hover { background: var(--gold-strong); }
+        .fir-extract-group { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; margin-bottom: 6px; color: var(--muted); }
+        .fir-extract-group:last-child { margin-bottom: 0; }
+        .fir-extract-chip { background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
+          padding: 3px 8px; font-size: 11px; color: var(--text); }
+        .linked-fir-row { background: var(--panel-raised); border: 1px solid var(--border); border-radius: 8px;
+          padding: 10px 12px; margin-top: 8px; }
+        .linked-fir-score { font-size: 10.5px; font-weight: 700; color: var(--gold-strong); background: var(--panel);
+          border: 1px solid var(--border); border-radius: 6px; padding: 2px 7px; }
       `}</style>
 
       <div className="fir-card">
@@ -219,7 +347,7 @@ export default function FIRManagement() {
               ))}
             </select>
             <button className="fir-btn ghost" onClick={runSearch}><Search size={13} /> Search</button>
-            <button className="fir-btn primary" onClick={() => setShowForm(true)} disabled={!officer}>
+            <button className="fir-btn primary" onClick={() => { setExtraction(null); setExtractionError(null); setShowForm(true); }} disabled={!officer}>
               <Plus size={13} /> New FIR
             </button>
           </div>
@@ -256,11 +384,11 @@ export default function FIRManagement() {
       </div>
 
       {showForm && (
-        <div className="modal-overlay" onClick={() => setShowForm(false)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-overlay" onClick={closeForm}>
+          <div className="modal" style={{ width: 460 }} onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
               <div className="modal-title">New FIR</div>
-              <X size={16} style={{ cursor: "pointer", color: "var(--muted)" }} onClick={() => setShowForm(false)} />
+              <X size={16} style={{ cursor: "pointer", color: "var(--muted)" }} onClick={closeForm} />
             </div>
 
             <div className="field-label">Crime Type *</div>
@@ -293,12 +421,77 @@ export default function FIRManagement() {
             <input className="field-input" value={form.longitude}
               onChange={(e) => setForm({ ...form, longitude: e.target.value })} placeholder="e.g. 77.7500" />
 
-            <div className="field-label">Brief Facts</div>
+            <div className="field-label-row">
+              <span className="field-label" style={{ marginBottom: 0 }}>Brief Facts</span>
+              <div className="fir-voice-controls">
+                <select className="fir-voice-lang" value={voiceLang} onChange={(e) => setVoiceLang(e.target.value)} disabled={listening}>
+                  <option value="en-IN">English</option>
+                  <option value="kn-IN">ಕನ್ನಡ (Kannada)</option>
+                </select>
+                <div className={`fir-mic-btn ${listening ? "recording" : ""}`} onClick={toggleListening} title="Voice-to-FIR dictation">
+                  {listening ? <Square size={12} /> : <Mic size={12} />}
+                  {listening ? "Stop" : "Dictate"}
+                </div>
+              </div>
+            </div>
             <textarea className="field-textarea" value={form.brief_facts}
-              onChange={(e) => setForm({ ...form, brief_facts: e.target.value })} placeholder="Brief incident description" />
+              onChange={(e) => setForm({ ...form, brief_facts: e.target.value })} placeholder="Brief incident description — type, or use Dictate to speak it in English or Kannada" />
+            {voiceError && <div className="fir-inline-note error">{voiceError}</div>}
+
+            <div className="fir-extract-row">
+              <div className="fir-btn ghost" style={{ fontSize: 11.5 }} onClick={runExtraction}>
+                <Sparkles size={12} /> {extracting ? "Extracting…" : "Auto-extract entities"}
+              </div>
+              {extraction && !extraction.ziaAvailable && (
+                <span className="fir-inline-note">Text mining ran without Zia — fewer entities than usual.</span>
+              )}
+            </div>
+            {extractionError && <div className="fir-inline-note error">{extractionError}</div>}
+
+            {extraction && (
+              <div className="fir-extraction-panel">
+                {(extraction.suggestedCrimeSubheadName || extraction.suggestedDistrictName) && (
+                  <div className="fir-extract-suggestion">
+                    <span>
+                      {extraction.suggestedCrimeSubheadName && <>Suggested crime type: <strong>{extraction.suggestedCrimeSubheadName}</strong></>}
+                      {extraction.suggestedCrimeSubheadName && extraction.suggestedDistrictName && " · "}
+                      {extraction.suggestedDistrictName && <>District: <strong>{extraction.suggestedDistrictName}</strong></>}
+                    </span>
+                    {extraction.suggestedCrimeSubheadId && (
+                      <div className="fir-apply-btn" onClick={applySuggestedCrimeType}>Apply crime type</div>
+                    )}
+                  </div>
+                )}
+                {extraction.persons.length > 0 && (
+                  <div className="fir-extract-group">
+                    <User size={11} /> {extraction.persons.map((p) => (
+                      <span key={p} className="fir-extract-chip">{p}</span>
+                    ))}
+                  </div>
+                )}
+                {extraction.locations.length > 0 && (
+                  <div className="fir-extract-group">
+                    <MapPin size={11} /> {extraction.locations.map((l) => (
+                      <span key={l} className="fir-extract-chip">{l}</span>
+                    ))}
+                  </div>
+                )}
+                {(extraction.keyphrases.length > 0 || extraction.keywords.length > 0) && (
+                  <div className="fir-extract-group">
+                    <Sparkles size={11} /> {(extraction.keyphrases.length ? extraction.keyphrases : extraction.keywords).map((k) => (
+                      <span key={k} className="fir-extract-chip">{k}</span>
+                    ))}
+                  </div>
+                )}
+                {extraction.persons.length === 0 && extraction.locations.length === 0 &&
+                  extraction.keywords.length === 0 && extraction.keyphrases.length === 0 && (
+                    <div className="fir-inline-note">No entities detected in this text yet.</div>
+                )}
+              </div>
+            )}
 
             <div className="modal-actions">
-              <button className="fir-btn ghost" style={{ flex: 1, justifyContent: "center" }} onClick={() => setShowForm(false)}>Cancel</button>
+              <button className="fir-btn ghost" style={{ flex: 1, justifyContent: "center" }} onClick={closeForm}>Cancel</button>
               <button className="fir-btn primary" style={{ flex: 1, justifyContent: "center" }} onClick={submitFir} disabled={submitting}>
                 {submitting ? "Saving…" : "Create FIR"}
               </button>
@@ -381,6 +574,38 @@ export default function FIRManagement() {
                         ) : c.name}
                       </span>
                       <span style={{ color: "var(--muted)" }}>{c.occupation || ""}</span>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="detail-section">
+                  <div className="detail-section-title" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                    <span><Link2 size={11} style={{ verticalAlign: -1, marginRight: 4 }} />Possibly Linked FIRs</span>
+                    {!linkedMatches && !linkedLoading && (
+                      <span className="fir-apply-btn" onClick={checkLinkedFirs}>Check for matches</span>
+                    )}
+                  </div>
+                  {linkedLoading && <div style={{ color: "var(--muted)", fontSize: 12 }}>Scanning cases within your access scope…</div>}
+                  {linkedError && <div className="fir-inline-note error">{linkedError}</div>}
+                  {linkedMatches && linkedMatches.length === 0 && (
+                    <div style={{ color: "var(--muted)", fontSize: 12 }}>No likely matches found within your access scope.</div>
+                  )}
+                  {linkedMatches && linkedMatches.map((m) => (
+                    <div key={m.caseMasterId} className="linked-fir-row">
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                        <span className="mono" style={{ fontSize: 12 }}>{m.caseNo || m.caseMasterId}</span>
+                        <span className="linked-fir-score">{Math.round(m.score * 100)}% match</span>
+                      </div>
+                      <div style={{ fontSize: 11.5, color: "var(--muted)", marginTop: 2 }}>
+                        {m.crimeType} · {m.station} · {m.district} · {m.date}
+                      </div>
+                      {m.reasons.length > 0 && (
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 6 }}>
+                          {m.reasons.map((r) => (
+                            <span key={r} className="fir-extract-chip">{r}</span>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>

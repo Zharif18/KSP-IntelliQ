@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
-import { forceSimulation, forceLink, forceManyBody, forceCenter, forceCollide } from "d3-force";
-import { Search, SlidersHorizontal, X, MapPin, AlertTriangle, History, Clock, Gavel } from "lucide-react";
+import { forceSimulation, forceLink, forceManyBody, forceCenter, forceCollide, forceX, forceY } from "d3-force";
+import { Search, SlidersHorizontal, X, MapPin, AlertTriangle, History, Clock, Gavel, Sparkles, Printer, Users, ZoomIn, ZoomOut, Maximize2, Shield } from "lucide-react";
 
 /* ---------------------------------------------------------------------
    Calls the real backend route:
@@ -60,9 +60,13 @@ export default function NetworkGraph() {
   const [filtersOpen, setFiltersOpen] = useState(false);
 
   const [positions, setPositions] = useState({}); // id -> {x, y}
+  const [hovered, setHovered] = useState(null); // node id currently hovered
   const [profile, setProfile] = useState(null);
   const [profileLoading, setProfileLoading] = useState(false);
   const [profileError, setProfileError] = useState(null);
+  const [brief, setBrief] = useState(null);
+  const [briefLoading, setBriefLoading] = useState(false);
+  const [briefError, setBriefError] = useState(null);
   const simRef = useRef(null);
   const svgRef = useRef(null);
   const dragNode = useRef(null);
@@ -95,23 +99,48 @@ export default function NetworkGraph() {
   }, [districtFilter, minCases]);
 
   // ---- Force simulation: recompute whenever the graph data changes ----
+  // Repulsion, link distance, and collide radius all scale with node count —
+  // the old fixed strengths were tuned for the ~8-node demo graph and turned
+  // into a crushed hairball once a real district pulled in 60-120 people.
   useEffect(() => {
     if (!rawGraph || !rawGraph.nodes.length) return;
 
     const nodes = rawGraph.nodes.map((n) => ({ ...n }));
     const links = rawGraph.edges.map((e) => ({ ...e }));
+    const n = nodes.length;
+    const density = Math.min(1, n / 60); // 0 (sparse) → 1 (dense/120 cap)
+    const chargeStrength = -220 - density * 480; // -220 sparse … -700 dense
+    const linkDistance = (l) => {
+      const base = l.type === "co-accused" ? 70 : 110;
+      return base + density * 90;
+    };
 
     const sim = forceSimulation(nodes)
-      .force("link", forceLink(links).id((d) => d.id).distance((l) => (l.type === "co-accused" ? 70 : 110)).strength(0.5))
-      .force("charge", forceManyBody().strength(-220))
+      .force("link", forceLink(links).id((d) => d.id).distance(linkDistance).strength(0.4))
+      .force("charge", forceManyBody().strength(chargeStrength).distanceMax(600))
       .force("center", forceCenter(W / 2, H / 2))
-      .force("collide", forceCollide().radius((d) => (d.type === "location" ? 26 : 14 + Math.min(d.caseCount || 1, 6) * 2)))
+      .force("x", forceX(W / 2).strength(0.03))
+      .force("y", forceY(H / 2).strength(0.03))
+      .force("collide", forceCollide().radius((d) => (d.type === "location" ? 30 : 20 + Math.min(d.caseCount || 1, 6) * 2.2)).strength(0.9))
       .stop();
 
-    for (let i = 0; i < 250; i++) sim.tick();
+    const ticks = 250 + Math.round(density * 150); // denser graphs get more time to settle
+    for (let i = 0; i < ticks; i++) sim.tick();
+
+    // Auto-fit: rescale/recenter so the settled layout fills the canvas
+    // with breathing room, instead of spilling past the fixed viewBox or
+    // sitting tiny in the middle of it.
+    const xs = nodes.map((d) => d.x), ys = nodes.map((d) => d.y);
+    const minX = Math.min(...xs), maxX = Math.max(...xs);
+    const minY = Math.min(...ys), maxY = Math.max(...ys);
+    const pad = 60;
+    const spanX = Math.max(maxX - minX, 1), spanY = Math.max(maxY - minY, 1);
+    const k = Math.min(2, Math.max(0.4, Math.min((W - pad * 2) / spanX, (H - pad * 2) / spanY)));
+    const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+    setTransform({ x: W / 2 - cx * k, y: H / 2 - cy * k, k });
 
     const pos = {};
-    nodes.forEach((n) => { pos[n.id] = { x: n.x, y: n.y }; });
+    nodes.forEach((d) => { pos[d.id] = { x: d.x, y: d.y }; });
     setPositions(pos);
     simRef.current = { sim, nodes, links };
   }, [rawGraph]);
@@ -157,6 +186,47 @@ export default function NetworkGraph() {
     });
   }, []);
 
+  const zoomBy = useCallback((factor) => {
+    setTransform((t) => {
+      const k = Math.min(2.5, Math.max(0.4, t.k * factor));
+      // zoom around the canvas center so it doesn't drift off-screen
+      const cx = W / 2, cy = H / 2;
+      return {
+        k,
+        x: cx - ((cx - t.x) / t.k) * k,
+        y: cy - ((cy - t.y) / t.k) * k,
+      };
+    });
+  }, []);
+
+  const fitToView = useCallback(() => {
+    const ids = Object.keys(positions);
+    if (!ids.length) return;
+    const xs = ids.map((id) => positions[id].x), ys = ids.map((id) => positions[id].y);
+    const minX = Math.min(...xs), maxX = Math.max(...xs);
+    const minY = Math.min(...ys), maxY = Math.max(...ys);
+    const pad = 60;
+    const spanX = Math.max(maxX - minX, 1), spanY = Math.max(maxY - minY, 1);
+    const k = Math.min(2, Math.max(0.4, Math.min((W - pad * 2) / spanX, (H - pad * 2) / spanY)));
+    const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+    setTransform({ x: W / 2 - cx * k, y: H / 2 - cy * k, k });
+  }, [positions]);
+
+  // Neighbor set for whichever node is hovered (falls back to selected) —
+  // drives the "highlight this node's ties, fade the rest" dimming below,
+  // which is what actually cuts through clutter on a dense graph.
+  const focusId = hovered || selected?.id || null;
+  const focusNeighbors = useMemo(() => {
+    if (!focusId || !rawGraph) return null;
+    const set = new Set([focusId]);
+    rawGraph.edges.forEach((e) => {
+      const s = e.source?.id || e.source, t = e.target?.id || e.target;
+      if (s === focusId) set.add(t);
+      if (t === focusId) set.add(s);
+    });
+    return set;
+  }, [focusId, rawGraph]);
+
   const onBgPointerDown = (ev) => {
     panState.current = { startX: ev.clientX, startY: ev.clientY, origin: { ...transform } };
   };
@@ -195,10 +265,30 @@ export default function NetworkGraph() {
     setProfile(null);
     setProfileError(null);
     setProfileLoading(true);
+    setBrief(null);
+    setBriefError(null);
     fetchJSON(`get_person_profile?person_key=${encodeURIComponent(personKey)}`)
       .then(setProfile)
       .catch((err) => setProfileError(err.message))
       .finally(() => setProfileLoading(false));
+  };
+
+  const closeProfile = () => {
+    setProfile(null);
+    setProfileError(null);
+    setBrief(null);
+    setBriefError(null);
+  };
+
+  const generateBrief = () => {
+    if (!profile) return;
+    setBrief(null);
+    setBriefError(null);
+    setBriefLoading(true);
+    fetchJSON(`get_investigation_brief?person_key=${encodeURIComponent(profile.personKey)}`)
+      .then(setBrief)
+      .catch((err) => setBriefError(err.message))
+      .finally(() => setBriefLoading(false));
   };
 
   const onPointerUp = () => {
@@ -232,6 +322,10 @@ export default function NetworkGraph() {
         .net-btn { display: flex; align-items: center; gap: 6px; background: var(--panel-raised); border: 1px solid var(--border);
           border-radius: 8px; padding: 8px 12px; font-size: 12px; color: var(--text); cursor: pointer; }
         .net-btn.active { border-color: var(--gold); color: var(--gold-strong); }
+        .net-zoom-group { display: flex; gap: 4px; }
+        .net-zoom-btn { padding: 8px 9px; }
+        .net-cap-hint { font-size: 11px; color: var(--muted); background: var(--panel); border: 1px solid var(--border);
+          border-radius: 8px; padding: 8px 10px; }
         .net-legend { display: flex; gap: 16px; font-size: 11px; color: var(--muted); margin-left: auto; align-items: center; }
         .net-legend-dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; margin-right: 5px; vertical-align: -1px; }
         .net-filters { display: flex; gap: 14px; align-items: center; background: var(--panel); border: 1px solid var(--border);
@@ -276,6 +370,28 @@ export default function NetworkGraph() {
         .profile-table tr:last-child td { border-bottom: none; }
         .profile-loading, .profile-error, .profile-suppressed { padding: 30px; text-align: center; color: var(--muted); font-size: 13px; }
         .profile-error { color: var(--wine); }
+        .profile-title-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+        .brief-btn { display: flex; align-items: center; gap: 6px; background: var(--gold); color: var(--ink);
+          border-radius: 8px; padding: 8px 12px; font-size: 11.5px; font-weight: 700; cursor: pointer; white-space: nowrap; }
+        .brief-btn:hover { background: var(--gold-strong); }
+        .brief-block { margin-top: 22px; border-top: 1px dashed var(--border); padding-top: 16px; }
+        .brief-section-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+        .brief-ai-badge { font-size: 9.5px; font-weight: 600; text-transform: none; letter-spacing: 0; color: var(--muted);
+          background: var(--panel-raised); border: 1px solid var(--border); border-radius: 6px; padding: 3px 8px; }
+        .brief-summary { font-size: 12.5px; line-height: 1.65; color: var(--text); margin: 0 0 14px; }
+        .brief-subhead { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em;
+          color: var(--muted); margin: 0 0 8px; }
+        .brief-footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;
+          margin-top: 6px; font-size: 10.5px; color: var(--muted); }
+        .brief-print-btn { display: flex; align-items: center; gap: 5px; background: var(--panel-raised); border: 1px solid var(--border);
+          border-radius: 6px; padding: 5px 10px; font-size: 11px; color: var(--text); cursor: pointer; }
+        .brief-print-btn:hover { border-color: var(--gold); color: var(--gold-strong); }
+        @media print {
+          body * { visibility: hidden; }
+          #investigation-brief-print, #investigation-brief-print * { visibility: visible; }
+          #investigation-brief-print { position: absolute; top: 0; left: 0; width: 100%; }
+          .brief-print-btn { display: none; }
+        }
       `}</style>
 
       {/* Toolbar */}
@@ -287,6 +403,16 @@ export default function NetworkGraph() {
         <div className={`net-btn ${filtersOpen ? "active" : ""}`} onClick={() => setFiltersOpen((v) => !v)}>
           <SlidersHorizontal size={13} /> Filters
         </div>
+        <div className="net-zoom-group">
+          <div className="net-btn net-zoom-btn" title="Zoom out" onClick={() => zoomBy(0.85)}><ZoomOut size={13} /></div>
+          <div className="net-btn net-zoom-btn" title="Zoom in" onClick={() => zoomBy(1.15)}><ZoomIn size={13} /></div>
+          <div className="net-btn net-zoom-btn" title="Fit to view" onClick={fitToView}><Maximize2 size={13} /></div>
+        </div>
+        {rawGraph?.nodes?.length >= 120 && (
+          <div className="net-cap-hint" title="Showing the first 120 people for this filter. Narrow with District or Min. cases to see the rest.">
+            Showing top 120 — narrow filters to see more
+          </div>
+        )}
         <div className="net-legend">
           <span><span className="net-legend-dot" style={{ background: "var(--wine)" }} />Repeat offender</span>
           <span><span className="net-legend-dot" style={{ background: "var(--gold)" }} />Single case</span>
@@ -332,18 +458,25 @@ export default function NetworkGraph() {
           >
             <g transform={`translate(${transform.x},${transform.y}) scale(${transform.k})`}>
               {visibleEdges.map((e, i) => {
-                const s = positions[e.source?.id || e.source];
-                const t = positions[e.target?.id || e.target];
+                const sId = e.source?.id || e.source, tId = e.target?.id || e.target;
+                const s = positions[sId];
+                const t = positions[tId];
                 if (!s || !t) return null;
                 const isCo = e.type === "co-accused";
+                // When a node is focused (hover or select), fade every edge
+                // not touching it — this is what actually declutters a
+                // dense graph instead of just letting everything sit at
+                // equal, competing opacity.
+                const inFocus = !focusNeighbors || (focusNeighbors.has(sId) && focusNeighbors.has(tId));
                 return (
                   <line
                     key={i}
                     x1={s.x} y1={s.y} x2={t.x} y2={t.y}
                     stroke={isCo ? "var(--wine)" : "var(--border)"}
                     strokeWidth={isCo ? Math.min(1 + e.weight, 5) : 1.2}
-                    strokeOpacity={isCo ? 0.55 : 0.4}
+                    strokeOpacity={inFocus ? (isCo ? 0.55 : 0.4) : 0.08}
                     strokeDasharray={isCo ? "0" : "3,3"}
+                    style={{ transition: "stroke-opacity 120ms ease" }}
                   />
                 );
               })}
@@ -353,21 +486,31 @@ export default function NetworkGraph() {
                 const isLoc = n.type === "location";
                 const r = isLoc ? 12 : 8 + Math.min(n.caseCount || 1, 6) * 1.6;
                 const fill = isLoc ? "var(--sage)" : n.repeatOffender ? "var(--wine)" : "var(--gold)";
+                const isFocused = focusId === n.id;
+                const inFocus = !focusNeighbors || focusNeighbors.has(n.id);
+                // Labels always-on gets unreadable past ~40 nodes, so past
+                // that point only the focused/selected node and its direct
+                // neighbors get a label — everyone else surfaces on hover.
+                const showLabel = visibleNodes.length <= 40 || isFocused || (focusNeighbors && focusNeighbors.has(n.id));
                 return (
                   <g
                     key={n.id}
                     transform={`translate(${p.x},${p.y})`}
                     onPointerDown={(ev) => { ev.stopPropagation(); dragNode.current = { id: n.id }; }}
+                    onPointerEnter={() => setHovered(n.id)}
+                    onPointerLeave={() => setHovered((h) => (h === n.id ? null : h))}
                     onClick={() => setSelected(n)}
-                    style={{ cursor: "pointer" }}
+                    style={{ cursor: "pointer", opacity: inFocus ? 1 : 0.25, transition: "opacity 120ms ease" }}
                   >
                     <circle r={r} fill={fill} fillOpacity={selected?.id === n.id ? 1 : 0.85}
-                      stroke={selected?.id === n.id ? "var(--gold-strong)" : "var(--ink)"}
-                      strokeWidth={selected?.id === n.id ? 2.5 : 1} />
+                      stroke={selected?.id === n.id || isFocused ? "var(--gold-strong)" : "var(--ink)"}
+                      strokeWidth={selected?.id === n.id || isFocused ? 2.5 : 1} />
                     {isLoc ? <MapPin size={11} x={-5.5} y={-5.5} color="var(--ink)" /> : null}
-                    <text y={r + 13} textAnchor="middle" fontSize="9.5" fill="var(--muted)">
-                      {n.label.length > 16 ? n.label.slice(0, 15) + "…" : n.label}
-                    </text>
+                    {showLabel && (
+                      <text y={r + 13} textAnchor="middle" fontSize="9.5" fill="var(--muted)">
+                        {n.label.length > 16 ? n.label.slice(0, 15) + "…" : n.label}
+                      </text>
+                    )}
                   </g>
                 );
               })}
@@ -397,6 +540,14 @@ export default function NetworkGraph() {
                   {(selected.crimeTypes || []).map((c) => <span key={c} className="net-chip">{c}</span>)}
                   {!selected.crimeTypes?.length && <span style={{ color: "var(--muted)", fontSize: 11.5 }}>None on file</span>}
                 </div>
+                {selected.investigatingOfficers && (
+                  <div className="net-side-row">
+                    <div className="net-side-label"><Shield size={10} style={{ verticalAlign: -1, marginRight: 3 }} />Investigating Officer(s)</div>
+                    {selected.investigatingOfficers.length > 0
+                      ? selected.investigatingOfficers.map((o) => <span key={o} className="net-chip">{o}</span>)
+                      : <span style={{ color: "var(--muted)", fontSize: 11.5 }}>None on file</span>}
+                  </div>
+                )}
                 {selected.repeatOffender && (
                   <div className="net-side-row" style={{ display: "flex", gap: 6, alignItems: "center", color: "var(--wine)", fontSize: 11.5 }}>
                     <AlertTriangle size={13} /> Appears across {selected.stations?.length || 1} jurisdiction(s)
@@ -423,19 +574,28 @@ export default function NetworkGraph() {
           "View full profile" button. Pulls every incident tied to this
           PersonKey across jurisdictions from /get_person_profile. */}
       {(profileLoading || profile || profileError) && (
-        <div className="profile-overlay" onClick={() => { setProfile(null); setProfileError(null); }}>
+        <div className="profile-overlay" onClick={closeProfile}>
           <div className="profile-card" onClick={(e) => e.stopPropagation()}>
-            <X className="profile-close" size={18} onClick={() => { setProfile(null); setProfileError(null); }} />
+            <X className="profile-close" size={18} onClick={closeProfile} />
             {profileLoading ? (
               <div className="profile-loading">Building offender profile…</div>
             ) : profileError ? (
               <div className="profile-error">Couldn't load profile: {profileError}</div>
             ) : (
               <>
-                <div className="profile-title"><History size={16} /> {profile.label}</div>
-                <div className="profile-sub">
-                  {profile.repeatOffender ? "Repeat Offender Profile" : "Offender Profile"}
-                  {profile.districts.length > 0 && ` · ${profile.districts.join(", ")}`}
+                <div className="profile-title-row">
+                  <div>
+                    <div className="profile-title"><History size={16} /> {profile.label}</div>
+                    <div className="profile-sub">
+                      {profile.repeatOffender ? "Repeat Offender Profile" : "Offender Profile"}
+                      {profile.districts.length > 0 && ` · ${profile.districts.join(", ")}`}
+                    </div>
+                  </div>
+                  {!brief && !briefLoading && (
+                    <div className="brief-btn" onClick={generateBrief}>
+                      <Sparkles size={13} /> Generate Investigation Brief
+                    </div>
+                  )}
                 </div>
 
                 <div className="profile-stat-row">
@@ -496,6 +656,61 @@ export default function NetworkGraph() {
                       ))}
                     </tbody>
                   </table>
+                )}
+
+                {/* AUTO-GENERATED INVESTIGATION BRIEF
+                    Composed server-side from the same scoped case data
+                    above (MO pattern, associates, recurring narrative
+                    terms) — never independent of it, so nothing here can
+                    say something the rest of the profile doesn't back up. */}
+                {(briefLoading || brief || briefError) && (
+                  <div className="brief-block" id="investigation-brief-print">
+                    <div className="profile-section-title brief-section-title">
+                      <span><Sparkles size={12} style={{ verticalAlign: -2, marginRight: 5 }} />Investigation Brief</span>
+                      {brief && (
+                        <span className="brief-ai-badge">AI-summarized · verify against source records</span>
+                      )}
+                    </div>
+
+                    {briefLoading ? (
+                      <div className="profile-loading">Composing brief from linked case data…</div>
+                    ) : briefError ? (
+                      <div className="profile-error">Couldn't generate brief: {briefError}</div>
+                    ) : (
+                      <>
+                        <p className="brief-summary">{brief.summary}</p>
+
+                        {brief.associates.length > 0 && (
+                          <>
+                            <div className="brief-subhead"><Users size={11} style={{ verticalAlign: -1, marginRight: 4 }} />Known Associates</div>
+                            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
+                              {brief.associates.map((a) => (
+                                <span key={a.personKey} className="net-chip">{a.label} × {a.sharedCases}</span>
+                              ))}
+                            </div>
+                          </>
+                        )}
+
+                        {brief.narrativeKeywords.length > 0 && (
+                          <>
+                            <div className="brief-subhead">Recurring Case-Narrative Terms</div>
+                            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
+                              {brief.narrativeKeywords.map((k) => (
+                                <span key={k} className="net-chip">{k}</span>
+                              ))}
+                            </div>
+                          </>
+                        )}
+
+                        <div className="brief-footer">
+                          <span>Generated {new Date(brief.generatedAt).toLocaleString()} · for briefing use only, not a substitute for the case file</span>
+                          <div className="brief-print-btn" onClick={() => window.print()}>
+                            <Printer size={12} /> Print
+                          </div>
+                        </div>
+                      </>
+                    )}
+                  </div>
                 )}
               </>
             )}

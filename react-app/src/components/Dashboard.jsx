@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import {
   Shield, FileText, Users, Map, BarChart3, MessageSquare,
-  Search, Bell, Send, Radio, ChevronLeft, Sun, Moon, LogOut, Share2, ShieldAlert, AlertTriangle
+  Search, Bell, Send, Radio, ChevronLeft, Sun, Moon, LogOut, Share2, ShieldAlert, AlertTriangle, Scale
 } from "lucide-react";
 import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid
@@ -12,6 +12,7 @@ import NetworkGraph from "./NetworkGraph";
 import Officers from "./Officers";
 import Reports from "./Reports";
 import AuditLog from "./AuditLog";
+import BiasAudit from "./BiasAudit";
 import catalyst from "../catalystInit.jsx";
 
 /* ---------------------------------------------------------------------
@@ -33,6 +34,7 @@ const ALL_TABS = [
   { icon: Users, label: "Officers" },
   { icon: Search, label: "Reports" },
   { icon: ShieldAlert, label: "Audit Log" },
+  { icon: Scale, label: "Bias Audit" },
 ];
 
 function tabsForRole(accessRole) {
@@ -53,6 +55,11 @@ function tabsForRole(accessRole) {
     // get_audit_log's _require_scope_at_least("DISTRICT") check.
     if (accessRole !== "SP") hidden.add("Audit Log");
   }
+  // Bias Audit is gated the exact same way as Audit Log server-side
+  // (get_bias_audit also requires DISTRICT scope or above) — SP and
+  // SCRB Analyst only, so the tab never dangles for a role the API
+  // would just 403 on.
+  if (accessRole !== "SP" && accessRole !== "SCRB Analyst") hidden.add("Bias Audit");
   return ALL_TABS.filter((t) => !hidden.has(t.label));
 }
 
@@ -508,6 +515,8 @@ export default function KSPIntelliQDashboard() {
           <Reports />
         ) : activeTab === "Audit Log" ? (
           <AuditLog />
+        ) : activeTab === "Bias Audit" ? (
+          <BiasAudit />
         ) : activeTab !== "Dashboard" ? (
           <div style={{ padding: 40, textAlign: "center", color: "var(--muted)" }}>
             {activeTab} module — build this next.

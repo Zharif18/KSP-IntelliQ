@@ -72,8 +72,11 @@ def handler(request: Request):
             ("/add_case", "POST"): add_case,
             ("/update_case_status", "PUT"): update_case_status,
             ("/get_case_detail", "GET"): get_case_detail,
+            ("/get_linked_fir_matches", "GET"): get_linked_fir_matches,
+            ("/extract_fir_entities", "POST"): extract_fir_entities,
             ("/get_network_graph", "GET"): get_network_graph,
             ("/get_person_profile", "GET"): get_person_profile,
+            ("/get_investigation_brief", "GET"): get_investigation_brief,
             ("/get_officers", "GET"): get_officers,
             ("/get_reports", "GET"): get_reports,
             ("/ai_assistant", "POST"): ai_assistant,
@@ -82,6 +85,7 @@ def handler(request: Request):
             ("/get_trend_alerts", "GET"): get_trend_alerts,
             ("/get_incident_log", "GET"): get_incident_log,
             ("/get_crime_trend", "GET"): get_crime_trend,
+            ("/get_bias_audit", "GET"): get_bias_audit,
         }
 
         route_fn = routes.get((request.path, request.method))
@@ -714,6 +718,141 @@ def get_case_detail(app, request, officer, audit):
 
 
 # ---------------------------------------------------------------------
+# GET /get_linked_fir_matches?case_master_id=
+#
+# Duplicate/Linked FIR Detection: flags other FIRs — same crime head,
+# same suspect, or similar narrative wording — that a records clerk
+# reading one case at a time would never notice on their own. This is
+# the classic "serial offender / same gang, different station" catch.
+#
+# Method (deliberately simple and auditable, not a black box):
+#   - Zia keyphrase-extracts the target case's own BriefFacts once.
+#   - For every OTHER case in the officer's own scope with the same
+#     CrimeMajorHeadID, score it on three transparent signals:
+#       * lexical overlap  — how many of the target's keyphrases show
+#         up in the candidate's own narrative text
+#       * shared suspect    — any accused PersonKey in common
+#       * same crime subhead (minor head), same station
+#   - Combine into one score in [0, 1] and return the strongest matches
+#     with the reasons attached, so the officer can see WHY something
+#     was flagged rather than just trusting a number.
+# This is lexical, not semantic — it will miss paraphrased narratives
+# and it will not catch anything written in a different language than
+# the target case. Treat matches as leads to check, not conclusions.
+#
+# RBAC: target case must pass the same _case_in_officer_scope check as
+# get_case_detail; candidates are pulled through the same
+# _case_scope_clause every other route uses, so this can never surface
+# a case outside the caller's own access scope.
+# ---------------------------------------------------------------------
+def _linked_fir_matches(app, officer, case_master_id, limit=5):
+    from collections import Counter
+
+    rows = zcql_rows(app, "CaseMaster", f"SELECT * FROM CaseMaster WHERE CaseMasterID = '{case_master_id}'")
+    if not rows:
+        return None, "not_found"
+    target = rows[0]
+
+    in_scope, _ = _case_in_officer_scope(app, officer, target)
+    if not in_scope:
+        return None, "forbidden"
+
+    target_text = (target.get("BriefFacts") or "").strip()
+    target_keyphrases = []
+    if target_text:
+        try:
+            zia = app.zia()
+            kw_data = zia.get_keyword_extraction([target_text[:1500]])
+            kw = ((kw_data or [{}])[0] or {}).get("keyword_extractor", {}) or {}
+            target_keyphrases = [p for p in (kw.get("keyphrases") or kw.get("keywords") or []) if len(p) > 2]
+        except Exception as e:
+            logging.getLogger().warning(f"Zia keyword extraction unavailable for linked-FIR matching: {e}")
+
+    scope_clause = _case_scope_clause(app, officer)
+    case_where = f" WHERE {scope_clause}" if scope_clause else ""
+    candidate_rows = zcql_rows_paginated(app, "CaseMaster",
+        f"SELECT CaseMasterID, CaseNo, PoliceStationID, CrimeMinorHeadID, CrimeMajorHeadID, "
+        f"CrimeRegisteredDate, CaseStatusID, BriefFacts FROM CaseMaster{case_where}")
+    candidate_rows = [c for c in candidate_rows
+                       if c["CaseMasterID"] != case_master_id
+                       and c.get("CrimeMajorHeadID") == target.get("CrimeMajorHeadID")]
+
+    accused_rows = zcql_rows_paginated(app, "Accused", "SELECT CaseMasterID, PersonKey FROM Accused")
+    accused_by_case = {}
+    for a in accused_rows:
+        accused_by_case.setdefault(a["CaseMasterID"], set()).add(a.get("PersonKey"))
+    target_persons = accused_by_case.get(case_master_id, set())
+
+    lookups = _lookups(app)
+    unit_name = {u["UnitID"]: u["UnitName"] for u in lookups["units"]}
+    unit_district = {u["UnitID"]: u["DistrictID"] for u in lookups["units"]}
+    district_name = {d["DistrictID"]: d["DistrictName"] for d in lookups["districts"]}
+    subhead_name = {s["CrimeSubHeadID"]: s["CrimeHeadName"] for s in lookups["crime_subheads"]}
+    status_name = {s["CaseStatusID"]: s["CaseStatusName"] for s in lookups["statuses"]}
+
+    matches = []
+    for c in candidate_rows:
+        reasons = []
+        lexical_score = 0.0
+        cand_text = (c.get("BriefFacts") or "").lower()
+        if target_keyphrases and cand_text:
+            hit_terms = [p for p in target_keyphrases if p.lower() in cand_text]
+            if hit_terms:
+                lexical_score = len(hit_terms) / len(target_keyphrases)
+                reasons.append("Overlapping narrative terms: " + ", ".join(hit_terms[:4]))
+
+        shared_persons = target_persons & accused_by_case.get(c["CaseMasterID"], set())
+        shared_persons.discard(None)
+        shared_suspect = bool(shared_persons)
+        if shared_suspect:
+            reasons.append("Names a suspect also accused in this case")
+
+        same_subhead = c.get("CrimeMinorHeadID") == target.get("CrimeMinorHeadID")
+        if same_subhead:
+            reasons.append("Same crime type")
+
+        same_station = c.get("PoliceStationID") == target.get("PoliceStationID")
+        if same_station and not same_subhead:
+            reasons.append("Same station")
+
+        score = (0.6 * min(lexical_score, 1.0)) + (0.3 if shared_suspect else 0.0) + (0.1 if same_subhead else 0.0)
+        if score < 0.3 and not shared_suspect:
+            continue  # not enough signal to surface as a lead
+
+        matches.append({
+            "caseMasterId": c["CaseMasterID"],
+            "caseNo": c.get("CaseNo"),
+            "station": unit_name.get(c.get("PoliceStationID"), "\u2014"),
+            "district": district_name.get(unit_district.get(c.get("PoliceStationID")), "\u2014"),
+            "crimeType": subhead_name.get(c.get("CrimeMinorHeadID"), "Unknown"),
+            "status": status_name.get(c.get("CaseStatusID"), "Unknown"),
+            "date": c.get("CrimeRegisteredDate"),
+            "score": round(min(score, 1.0), 2),
+            "reasons": reasons,
+        })
+
+    matches.sort(key=lambda m: -m["score"])
+    return matches[:limit], None
+
+
+def get_linked_fir_matches(app, request, officer, audit):
+    case_master_id = (request.args.get("case_master_id") or "").strip()
+    audit["resource_type"] = "linked_fir_matches"
+    audit["resource_id"] = case_master_id
+    if not case_master_id:
+        return make_response(jsonify({"error": "case_master_id is required"}), 400)
+
+    matches, err = _linked_fir_matches(app, officer, case_master_id)
+    if err == "not_found":
+        return make_response(jsonify({"error": "Case not found"}), 404)
+    if err == "forbidden":
+        return make_response(jsonify({"error": "forbidden", "message": "That case is outside your access scope."}), 403)
+
+    audit["record_count"] = len(matches)
+    return make_response(jsonify({"matches": matches}), 200)
+
+
+# ---------------------------------------------------------------------
 # GET /get_network_graph?district_id=&min_cases=&limit=
 #
 # RBAC/redaction: this is a cross-case analytical view, which is
@@ -740,10 +879,11 @@ def _network_graph(app, officer, district_id="", min_cases=1, limit_persons=120)
 
     scope_clause = _case_scope_clause(app, officer)
     case_where = f" WHERE {scope_clause}" if scope_clause else ""
-    case_rows = zcql_rows_paginated(app, "CaseMaster", f"SELECT CaseMasterID, PoliceStationID, CrimeMinorHeadID, CrimeMajorHeadID FROM CaseMaster{case_where}")
+    case_rows = zcql_rows_paginated(app, "CaseMaster", f"SELECT CaseMasterID, PoliceStationID, CrimeMinorHeadID, CrimeMajorHeadID, PolicePersonID FROM CaseMaster{case_where}")
     case_station = {c["CaseMasterID"]: c["PoliceStationID"] for c in case_rows}
     case_crime = {c["CaseMasterID"]: c.get("CrimeMinorHeadID") for c in case_rows}
     case_head = {c["CaseMasterID"]: c.get("CrimeMajorHeadID") for c in case_rows}
+    case_officer = {c["CaseMasterID"]: c.get("PolicePersonID") for c in case_rows}
     scoped_case_ids = set(case_station.keys())
 
     accused_rows = zcql_rows_paginated(app, "Accused", "SELECT AccusedMasterID, CaseMasterID, AccusedName, PersonKey, AgeYear FROM Accused")
@@ -752,6 +892,17 @@ def _network_graph(app, officer, district_id="", min_cases=1, limit_persons=120)
     unit_name = {u["UnitID"]: u["UnitName"] for u in zcql_rows(app, "Unit", "SELECT UnitID, UnitName FROM Unit")}
     subhead_name = {s["CrimeSubHeadID"]: s["CrimeHeadName"]
                      for s in zcql_rows(app, "CrimeSubHead", "SELECT CrimeSubHeadID, CrimeHeadName FROM CrimeSubHead")}
+
+    # Investigating-officer names are personnel data — the same category
+    # /get_officers already blocks for the SCRB Analyst role ("Personnel
+    # rosters are not part of your role's data scope"). That role can see
+    # the case-linkage graph but shouldn't get officer names just because
+    # this is a different screen, so the same check is repeated here.
+    show_investigators = officer["role_name"] != "SCRB Analyst"
+    officer_name = {}
+    if show_investigators:
+        emp_rows = zcql_rows(app, "Employee", "SELECT EmployeeID, FirstName FROM Employee")
+        officer_name = {e["EmployeeID"]: e["FirstName"] for e in emp_rows if e.get("FirstName")}
 
     persons = defaultdict(list)
     cases_to_persons = defaultdict(list)
@@ -792,6 +943,11 @@ def _network_graph(app, officer, district_id="", min_cases=1, limit_persons=120)
         # if it's true in ANY of their entries, same as before.
         oldest_age = next((e.get("age") for e in entries if _is_juvenile(e.get("age"))), entries[-1].get("age"))
         label, redacted = _redact_accused(pk, entries[-1]["name"], oldest_age, officer)
+        investigators = sorted({
+            officer_name[case_officer[e["caseId"]]]
+            for e in entries
+            if case_officer.get(e["caseId"]) and case_officer[e["caseId"]] in officer_name
+        }) if show_investigators else []
 
         nodes.append({
             "id": pk,
@@ -803,6 +959,7 @@ def _network_graph(app, officer, district_id="", min_cases=1, limit_persons=120)
             "repeatOffender": len(entries) >= 2,
             "stations": sorted({unit_name.get(s, s) for s in stations if s}),
             "crimeTypes": [] if redacted and not officer["can_view_pii"] else sorted({c for c in crimes if c}),
+            "investigatingOfficers": investigators,
         })
 
     location_ids = {case_station[e["caseId"]] for pk in included for e in persons[pk] if case_station.get(e["caseId"])}
@@ -978,6 +1135,137 @@ def get_person_profile(app, request, officer, audit):
         }), 404)
     audit["record_count"] = profile["caseCount"]
     return make_response(jsonify(profile), 200)
+
+
+# ---------------------------------------------------------------------
+# GET /get_investigation_brief?person_key=...
+#
+# Auto-generated Investigation Brief: a one-page prep sheet for the
+# investigating officer before an interrogation, built from the SAME
+# scoped data _person_profile already exposes — a suspect's linked
+# cases, MO pattern, and (new here) co-accused associates and
+# recurring case-narrative terms.
+#
+# AI layer: same philosophy as ai_assistant — Zia Text Analytics
+# keyword/keyphrase extraction runs ONLY over each linked case's own
+# BriefFacts text (never over Zia's imagination), to surface recurring
+# MO terms across the narratives. Every sentence in the brief's
+# "summary" is composed deterministically from fields already present
+# in `profile`/`associates`/`narrative_keywords` — nothing is invented,
+# so the brief can never state a fact that isn't independently visible
+# elsewhere in the app.
+#
+# RBAC: reuses _person_profile's own scope clause and its
+# detailSuppressed gate. An officer whose role loses the incident-level
+# trail (SCRB Analyst, can_view_pii == False) loses the associate
+# network and narrative excerpts here too, for the same reason —
+# aggregate MO pattern only, never a case-by-case or identity trail.
+# ---------------------------------------------------------------------
+def _investigation_brief(app, officer, person_key):
+    from collections import Counter
+
+    profile = _person_profile(app, officer, person_key)
+    if profile is None:
+        return None
+
+    detail_allowed = not profile["detailSuppressed"]
+
+    scope_clause = _case_scope_clause(app, officer)
+    case_where = f" WHERE {scope_clause}" if scope_clause else ""
+    case_rows = zcql_rows_paginated(app, "CaseMaster",
+        f"SELECT CaseMasterID, BriefFacts FROM CaseMaster{case_where}")
+    case_by_id = {c["CaseMasterID"]: c for c in case_rows}
+
+    accused_rows = zcql_rows_paginated(app, "Accused",
+        "SELECT AccusedMasterID, CaseMasterID, AccusedName, PersonKey, AgeYear FROM Accused")
+    accused_rows = [a for a in accused_rows if a["CaseMasterID"] in case_by_id]
+
+    person_case_ids = {a["CaseMasterID"] for a in accused_rows if a["PersonKey"] == person_key}
+
+    # Co-accused: anyone else named on one of this person's own linked
+    # cases (within scope) — the "who else was involved" the officer
+    # would otherwise have to reconstruct by hand from each FIR.
+    associate_counts = Counter()
+    associate_latest = {}
+    for a in accused_rows:
+        if a["PersonKey"] != person_key and a["CaseMasterID"] in person_case_ids:
+            associate_counts[a["PersonKey"]] += 1
+            associate_latest[a["PersonKey"]] = a
+
+    associate_out = []
+    if detail_allowed:
+        for pk2, cnt in associate_counts.most_common(6):
+            a = associate_latest[pk2]
+            label, redacted = _redact_accused(pk2, a["AccusedName"], a.get("AgeYear"), officer)
+            associate_out.append({"personKey": pk2, "label": label, "redacted": redacted, "sharedCases": cnt})
+
+    narrative_keywords = []
+    if detail_allowed:
+        texts = [case_by_id[cid].get("BriefFacts") or "" for cid in person_case_ids]
+        combined = " ".join(t for t in texts if t).strip()
+        if combined:
+            try:
+                zia = app.zia()
+                kw_data = zia.get_keyword_extraction([combined[:1500]])  # Zia Text Analytics input cap
+                kw = ((kw_data or [{}])[0] or {}).get("keyword_extractor", {}) or {}
+                narrative_keywords = (kw.get("keyphrases") or kw.get("keywords") or [])[:8]
+            except Exception as e:
+                logging.getLogger().warning(f"Zia keyword extraction unavailable for brief, continuing without it: {e}")
+
+    mo = profile["modusOperandi"]
+    lines = [
+        f"{profile['label']} has {profile['caseCount']} linked case(s) within your access scope"
+        + (f", spanning {', '.join(profile['districts'])}." if profile["districts"] else "."),
+        f"Dominant pattern: {mo['dominantCrimeType']}, most often in the {mo['dominantTimeBand'].lower()} "
+        f"time band, gravity typically classed as {mo['dominantGravity']}.",
+    ]
+    if profile["repeatOffender"]:
+        lines.append("Flagged as a repeat offender — prior pattern should inform interview strategy.")
+    if detail_allowed:
+        if associate_out:
+            names = ", ".join(
+                f"{a['label']} ({a['sharedCases']} shared case{'s' if a['sharedCases'] > 1 else ''})"
+                for a in associate_out[:3]
+            )
+            lines.append(f"Known associates on linked cases: {names}.")
+        else:
+            lines.append("No co-accused associates found on linked cases within your access scope.")
+        if narrative_keywords:
+            lines.append("Recurring terms across case narratives: " + ", ".join(narrative_keywords) + ".")
+    else:
+        lines.append("Incident-level detail and associate network are outside this role's data scope — aggregate MO pattern only.")
+
+    return {
+        "personKey": person_key,
+        "label": profile["label"],
+        "redacted": profile["redacted"],
+        "generatedAt": datetime.datetime.utcnow().isoformat() + "Z",
+        "summary": " ".join(lines),
+        "caseCount": profile["caseCount"],
+        "repeatOffender": profile["repeatOffender"],
+        "jurisdictions": profile["jurisdictions"],
+        "districts": profile["districts"],
+        "modusOperandi": mo,
+        "associates": associate_out,
+        "narrativeKeywords": narrative_keywords,
+        "detailSuppressed": profile["detailSuppressed"],
+    }
+
+
+def get_investigation_brief(app, request, officer, audit):
+    person_key = (request.args.get("person_key") or "").strip()
+    audit["resource_type"] = "investigation_brief"
+    audit["resource_id"] = person_key
+    if not person_key:
+        return make_response(jsonify({"error": "person_key is required"}), 400)
+    brief = _investigation_brief(app, officer, person_key)
+    if brief is None:
+        return make_response(jsonify({
+            "error": "not_found",
+            "message": "No incidents for this person within your access scope.",
+        }), 404)
+    audit["record_count"] = brief["caseCount"]
+    return make_response(jsonify(brief), 200)
 
 
 # ---------------------------------------------------------------------
@@ -1376,6 +1664,144 @@ def get_crime_trend(app, request, officer, audit):
 
 
 # ---------------------------------------------------------------------
+# GET /get_bias_audit
+#
+# Bias/Fairness Auditing Dashboard: the app's "repeat offender" flag
+# (used by Network Graph, hotspots, and investigation briefs) is the
+# closest thing here to a predictive-policing risk signal, so this
+# audits THAT flag for demographic and geographic disparity — not by
+# guessing at bias, but by comparing each group's SHARE of flagged
+# cases/persons against its share of the underlying case/person
+# population. A group flagged in exact proportion to its share of the
+# raw data gets a disparity ratio of ~1.0; a ratio far from 1.0 in
+# either direction is worth a human look, not an automatic verdict.
+#
+# Deliberately excludes caste, religion, and any other protected
+# category not already collected elsewhere in this schema — this
+# audits geography (district) and the two demographic fields the app
+# already records (gender, juvenile/adult), nothing broader.
+#
+# Small-sample guard: any group with fewer than MIN_SAMPLE cases/persons
+# is reported but never marked "elevated" — a skewed ratio from 3
+# cases is noise, not a finding.
+#
+# RBAC: same gate as the Audit Log — DISTRICT scope (SP) or above, since
+# this is an oversight view of patterns across cases, not a single-case
+# read. Uses the same _case_scope_clause as every other route, so an SP
+# only audits their own district; SCRB Analyst (STATE) audits statewide.
+# ---------------------------------------------------------------------
+MIN_SAMPLE = 5
+
+
+def _disparity_rows(total_counter, flagged_counter, total_all, flagged_all, key_label):
+    rows = []
+    for key, total in total_counter.items():
+        flagged = flagged_counter.get(key, 0)
+        case_share = total / total_all if total_all else 0
+        flag_share = flagged / flagged_all if flagged_all else 0
+        ratio = round(flag_share / case_share, 2) if case_share > 0 else None
+        elevated = bool(ratio is not None and total >= MIN_SAMPLE and (ratio > 1.3 or ratio < 0.7))
+        rows.append({
+            key_label: key or "Not recorded",
+            "total": total,
+            "flagged": flagged,
+            "totalSharePct": round(case_share * 100, 1),
+            "flaggedSharePct": round(flag_share * 100, 1),
+            "disparityRatio": ratio,
+            "elevated": elevated,
+            "sampleTooSmall": total < MIN_SAMPLE,
+        })
+    rows.sort(key=lambda r: (-1 if r["elevated"] else 0, -(r["disparityRatio"] or 0)))
+    return rows
+
+
+def _bias_audit(app, officer):
+    from collections import defaultdict, Counter
+
+    scope_clause = _case_scope_clause(app, officer)
+    case_where = f" WHERE {scope_clause}" if scope_clause else ""
+    case_rows = zcql_rows_paginated(app, "CaseMaster", f"SELECT CaseMasterID, PoliceStationID FROM CaseMaster{case_where}")
+    scoped_case_ids = {c["CaseMasterID"] for c in case_rows}
+
+    accused_rows = zcql_rows_paginated(app, "Accused",
+        "SELECT CaseMasterID, PersonKey, GenderID, AgeYear FROM Accused")
+    accused_rows = [a for a in accused_rows if a["CaseMasterID"] in scoped_case_ids]
+
+    persons = defaultdict(list)
+    for a in accused_rows:
+        persons[a["PersonKey"]].append(a)
+
+    repeat_person_keys = {pk for pk, entries in persons.items()
+                           if len({e["CaseMasterID"] for e in entries}) >= 2}
+
+    flagged_case_ids = {e["CaseMasterID"] for pk in repeat_person_keys for e in persons[pk]}
+
+    lookups = _lookups(app)
+    unit_district = {u["UnitID"]: u["DistrictID"] for u in lookups["units"]}
+    district_name = {d["DistrictID"]: d["DistrictName"] for d in lookups["districts"]}
+
+    district_total, district_flagged = Counter(), Counter()
+    for c in case_rows:
+        d = district_name.get(unit_district.get(c.get("PoliceStationID")), "Unassigned")
+        district_total[d] += 1
+        if c["CaseMasterID"] in flagged_case_ids:
+            district_flagged[d] += 1
+
+    gender_total, gender_flagged = Counter(), Counter()
+    age_total, age_flagged = Counter(), Counter()
+    for pk, entries in persons.items():
+        latest = entries[-1]
+        gender = latest.get("GenderID") or "Not recorded"
+        gender_total[gender] += 1
+        band = "Juvenile" if _is_juvenile(latest.get("AgeYear")) else (
+            "Adult" if latest.get("AgeYear") is not None else "Not recorded")
+        age_total[band] += 1
+        if pk in repeat_person_keys:
+            gender_flagged[gender] += 1
+            age_flagged[band] += 1
+
+    total_cases = len(case_rows)
+    total_flagged_cases = len(flagged_case_ids)
+    total_persons = len(persons)
+    total_flagged_persons = len(repeat_person_keys)
+
+    return {
+        "generatedAt": datetime.datetime.utcnow().isoformat() + "Z",
+        "scope": officer["data_scope"],
+        "totals": {
+            "cases": total_cases,
+            "flaggedCases": total_flagged_cases,
+            "persons": total_persons,
+            "flaggedPersons": total_flagged_persons,
+        },
+        "geographic": _disparity_rows(district_total, district_flagged, total_cases, total_flagged_cases, "district"),
+        "genderRepresentation": _disparity_rows(gender_total, gender_flagged, total_persons, total_flagged_persons, "group"),
+        "ageBandRepresentation": _disparity_rows(age_total, age_flagged, total_persons, total_flagged_persons, "group"),
+        "methodologyNote": (
+            "Disparity ratio = a group's share of repeat-offender-flagged cases/persons, "
+            "divided by that group's share of all cases/persons in scope. 1.0 means the group "
+            "is flagged in proportion to its share of the data; further from 1.0 means it is "
+            "over- or under-represented among flags relative to its share of raw case volume."
+        ),
+        "disclaimer": (
+            "This measures statistical disparity in how the app's own repeat-offender flag is "
+            "distributed, not proof of discriminatory intent or model error — smaller districts and "
+            "groups naturally swing further from 1.0 on small samples. Treat 'elevated' rows as a "
+            "prompt for human review, not a conclusion."
+        ),
+    }
+
+
+def get_bias_audit(app, request, officer, audit):
+    audit["resource_type"] = "bias_audit"
+    if not _require_scope_at_least(officer, "DISTRICT"):
+        return make_response(jsonify({"error": "forbidden", "message": "Bias audit access requires SP level or above."}), 403)
+    result = _bias_audit(app, officer)
+    audit["record_count"] = result["totals"]["cases"]
+    return make_response(jsonify(result), 200)
+
+
+# ---------------------------------------------------------------------
 # GET /get_audit_log?limit=
 # Who can see the audit trail is itself an access-control question: an
 # SP can review their own district's activity; an SCRB Analyst can see
@@ -1596,6 +2022,89 @@ def _detect_crime_subhead(message, crime_subheads):
         if name and name.lower() in msg_low:
             return s["CrimeSubHeadID"], name
     return "", ""
+
+
+# ---------------------------------------------------------------------
+# POST /extract_fir_entities   body: {"text": "<free-text FIR narrative>"}
+#
+# FIR Text Mining: FIRs are still written as free text, so this is the
+# single highest-value AI feature — run the narrative through Catalyst
+# Zia NER + keyword extraction BEFORE the officer submits the form, and
+# hand back suggested structured values (crime type, district) plus the
+# raw extracted entities, so the officer can confirm/correct rather
+# than re-type. Nothing here writes to the database — it only proposes
+# values for the New FIR form fields the officer already controls.
+#
+# Same no-external-LLM philosophy as ai_assistant/get_investigation_brief:
+# Zia only extracts; the suggestion logic (_detect_district /
+# _detect_crime_subhead) is the same deterministic lookup match used
+# for the chat assistant, so a suggestion can only ever be a value that
+# already exists in your lookups, never a hallucinated one.
+#
+# RBAC: this doesn't touch CaseMaster/Accused/Victim at all — it's pure
+# text-in, entities-out on whatever the officer has typed so far — so
+# every authenticated officer can use it, same as ai_assistant.
+# ---------------------------------------------------------------------
+ZIA_PERSON_TAGS = {"Person", "PERSON"}
+
+
+def _extract_fir_entities(app, officer, text):
+    lookups = _lookups(app)
+    result = {
+        "persons": [],
+        "locations": [],
+        "keywords": [],
+        "keyphrases": [],
+        "suggestedCrimeSubheadId": "",
+        "suggestedCrimeSubheadName": "",
+        "suggestedDistrictId": "",
+        "suggestedDistrictName": "",
+        "ziaAvailable": True,
+    }
+    try:
+        zia = app.zia()
+        docs = [text[:1500]]  # Zia Text Analytics input cap
+
+        ner_data = zia.get_NER_prediction(docs)
+        kw_data = zia.get_keyword_extraction(docs)
+
+        entities = (((ner_data or [{}])[0] or {}).get("ner", {}) or {}).get("general_entities") or []
+        result["persons"] = sorted({e["token"] for e in entities if e.get("ner_tag") in ZIA_PERSON_TAGS})
+        result["locations"] = sorted({e["token"] for e in entities if e.get("ner_tag") in ZIA_LOCATION_TAGS})
+
+        kw = ((kw_data or [{}])[0] or {}).get("keyword_extractor", {}) or {}
+        result["keywords"] = (kw.get("keywords") or [])[:8]
+        result["keyphrases"] = (kw.get("keyphrases") or [])[:5]
+    except Exception as e:
+        logging.getLogger().warning(f"Zia text mining unavailable, continuing without it: {e}")
+        result["ziaAvailable"] = False
+
+    subhead_id, subhead_name = _detect_crime_subhead(text, lookups["crime_subheads"])
+    district_id, district_name = _detect_district(text, lookups["districts"], result["locations"])
+    # A district/station-scoped officer's own home district still wins
+    # if nothing else was detected in the narrative — keeps the
+    # suggestion useful without ever suggesting a district outside the
+    # officer's own operational area for scoped roles.
+    if not district_id and officer["data_scope"] in ("OWN_CASES", "STATION", "DISTRICT") and officer["district_id"]:
+        district_id = officer["district_id"]
+        district_name = next((d["DistrictName"] for d in lookups["districts"] if d["DistrictID"] == district_id), "")
+
+    result["suggestedCrimeSubheadId"] = subhead_id
+    result["suggestedCrimeSubheadName"] = subhead_name
+    result["suggestedDistrictId"] = district_id
+    result["suggestedDistrictName"] = district_name
+    return result
+
+
+def extract_fir_entities(app, request, officer, audit):
+    audit["resource_type"] = "fir_entity_extraction"
+    body = request.get_json(force=True) or {}
+    text = (body.get("text") or "").strip()
+    if not text:
+        return make_response(jsonify({"error": "text is required"}), 400)
+    result = _extract_fir_entities(app, officer, text)
+    audit["record_count"] = len(result["persons"]) + len(result["locations"])
+    return make_response(jsonify(result), 200)
 
 
 def _build_assistant_context(app, officer, message, zia_signals=None):
