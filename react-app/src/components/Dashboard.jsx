@@ -362,6 +362,9 @@ export default function KSPIntelliQDashboard() {
           display: flex; align-items: center; justify-content: center; color: var(--ink); }
         .id-name { font-size: 12px; font-weight: 600; color: var(--text); }
         .id-role { font-size: 9.5px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; font-weight: 500; }
+        .id-access { display: inline-block; margin-top: 3px; font-size: 8.5px; color: var(--gold-strong);
+          text-transform: uppercase; letter-spacing: 0.05em; font-weight: 700; padding: 1px 7px;
+          border: 1px solid rgba(212,176,115,0.4); border-radius: 20px; }
         .id-badge-no { font-size: 9.5px; color: var(--gold-strong); font-weight: 500; }
 
         /* Folder tabs */
@@ -479,10 +482,12 @@ export default function KSPIntelliQDashboard() {
                 <div className="id-name">{officer.name}</div>
                 <div className="id-role">
                   {officer.role} · {officer.station}
-                  {officer.accessRole && officer.accessRole !== "Unassigned" && (
-                    <> · <span title="RBAC access tier">{officer.accessRole}</span></>
-                  )}
                 </div>
+                {officer.accessRole && officer.accessRole !== "Unassigned" && officer.accessRole !== officer.role && (
+                  <div className="id-access" title="RBAC data-access tier — not a rank or job title">
+                    Access tier: {officer.accessRole}
+                  </div>
+                )}
                 <div className="id-badge-no mono">{officer.badge}</div>
               </div>
             </div>

@@ -3,6 +3,7 @@ import os
 import json
 import time
 import hashlib
+import re
 import datetime
 from flask import Request, make_response, jsonify # type: ignore
 import zcatalyst_sdk #type: ignore
@@ -1146,14 +1147,21 @@ def get_person_profile(app, request, officer, audit):
 # cases, MO pattern, and (new here) co-accused associates and
 # recurring case-narrative terms.
 #
-# AI layer: same philosophy as ai_assistant — Zia Text Analytics
-# keyword/keyphrase extraction runs ONLY over each linked case's own
-# BriefFacts text (never over Zia's imagination), to surface recurring
-# MO terms across the narratives. Every sentence in the brief's
-# "summary" is composed deterministically from fields already present
-# in `profile`/`associates`/`narrative_keywords` — nothing is invented,
-# so the brief can never state a fact that isn't independently visible
-# elsewhere in the app.
+# AI layer: same philosophy as ai_assistant — Catalyst Zia Text
+# Analytics (Keyword/Keyphrase Extraction + Sentiment Analysis) runs
+# ONLY over each linked case's own BriefFacts text (never over Zia's
+# imagination), to surface recurring MO terms and the overall tone of
+# the narratives. This is a deliberate design choice, not a stopgap:
+# an investigation brief is evidence an officer may act on, so every
+# sentence in the "summary" is composed deterministically from fields
+# already present in `profile`/`associates`/`narrative_keywords`/
+# `narrative_tone` — Zia is only ever allowed to EXTRACT signal from
+# text that's already in the case record, never to author new prose,
+# so the brief can never state a fact that isn't independently
+# visible elsewhere in the app. Wiring in a third-party generative
+# LLM here would trade that guarantee for fluent-sounding prose that
+# could invent details — not a trade worth making for a document used
+# in an interrogation room.
 #
 # RBAC: reuses _person_profile's own scope clause and its
 # detailSuppressed gate. An officer whose role loses the incident-level
@@ -1200,17 +1208,25 @@ def _investigation_brief(app, officer, person_key):
             associate_out.append({"personKey": pk2, "label": label, "redacted": redacted, "sharedCases": cnt})
 
     narrative_keywords = []
+    narrative_tone = ""
     if detail_allowed:
         texts = [case_by_id[cid].get("BriefFacts") or "" for cid in person_case_ids]
         combined = " ".join(t for t in texts if t).strip()
         if combined:
+            doc = [combined[:1500]]  # Zia Text Analytics input cap
             try:
                 zia = app.zia()
-                kw_data = zia.get_keyword_extraction([combined[:1500]])  # Zia Text Analytics input cap
+                kw_data = zia.get_keyword_extraction(doc)
                 kw = ((kw_data or [{}])[0] or {}).get("keyword_extractor", {}) or {}
                 narrative_keywords = (kw.get("keyphrases") or kw.get("keywords") or [])[:8]
             except Exception as e:
                 logging.getLogger().warning(f"Zia keyword extraction unavailable for brief, continuing without it: {e}")
+            try:
+                zia = app.zia()
+                sentiment_data = zia.get_sentiment_analysis(doc)
+                narrative_tone = ((sentiment_data or [{}])[0] or {}).get("document_sentiment", "") or ""
+            except Exception as e:
+                logging.getLogger().warning(f"Zia sentiment analysis unavailable for brief, continuing without it: {e}")
 
     mo = profile["modusOperandi"]
     lines = [
@@ -1232,6 +1248,8 @@ def _investigation_brief(app, officer, person_key):
             lines.append("No co-accused associates found on linked cases within your access scope.")
         if narrative_keywords:
             lines.append("Recurring terms across case narratives: " + ", ".join(narrative_keywords) + ".")
+        if narrative_tone:
+            lines.append(f"Overall tone of case narratives (Zia sentiment): {narrative_tone.lower()}.")
     else:
         lines.append("Incident-level detail and associate network are outside this role's data scope — aggregate MO pattern only.")
 
@@ -1248,6 +1266,7 @@ def _investigation_brief(app, officer, person_key):
         "modusOperandi": mo,
         "associates": associate_out,
         "narrativeKeywords": narrative_keywords,
+        "narrativeTone": narrative_tone,
         "detailSuppressed": profile["detailSuppressed"],
     }
 
@@ -2047,6 +2066,55 @@ def _detect_crime_subhead(message, crime_subheads):
 # ---------------------------------------------------------------------
 ZIA_PERSON_TAGS = {"Person", "PERSON"}
 
+# ---------------------------------------------------------------------
+# Weapon / MO dictionary match
+#
+# Zia's keyword extractor is general-purpose — a weapon mentioned in
+# the narrative just comes back as one more keyphrase in the same
+# bucket as everything else. For a field officers scan for at a
+# glance, that's not good enough, so this is a small curated,
+# bilingual (English + Kannada) surface-form dictionary matched
+# against the raw narrative with a plain regex pass alongside (not
+# instead of) Zia. Deterministic, offline, and cheap to extend —
+# no model call, no hallucination risk, just substring matching on a
+# hand-built list. Each canonical label maps to the surface forms
+# (script variants, common transliterations, related tools) that
+# should count as a hit for it.
+# ---------------------------------------------------------------------
+WEAPON_MO_DICTIONARY = {
+    "Knife": ["knife", "knives", "blade", "dagger", "ಚಾಕು", "ಕತ್ತಿ"],
+    "Firearm": ["gun", "pistol", "revolver", "rifle", "firearm", "country-made pistol", "ಬಂದೂಕ", "ಪಿಸ್ತೂಲ್"],
+    "Sword": ["sword", "machete", "sickle", "ಕತ್ತಿ ಆಯುಧ", "ಕುಡುಗೋಲು"],
+    "Axe": ["axe", "hatchet", "ಕೊಡಲಿ"],
+    "Chain": ["chain snatching", "gold chain", "neck chain", "ಸರ ಕಳ್ಳತನ", "ಚಿನ್ನದ ಸರ"],
+    "Blunt Object": ["stick", "iron rod", "rod", "club", "hammer", "wooden log", "ಕಲ್ಲು", "ಕೋಲು", "ಕಬ್ಬಿಣದ ರಾಡ್"],
+    "Vehicle": ["motorcycle", "two-wheeler", "car", "auto rickshaw", "lorry", "van", "ವಾಹನ", "ಬೈಕ್", "ಕಾರು"],
+    "Acid": ["acid attack", "acid", "ಆಮ್ಲ ದಾಳಿ", "ಆಮ್ಲ"],
+    "Explosive": ["bomb", "explosive", "grenade", "country bomb", "ಬಾಂಬ್", "ಸ್ಫೋಟಕ"],
+    "Poison": ["poisoning", "poison", "ವಿಷ"],
+    "Rope": ["rope", "strangulation", "ಹಗ್ಗ"],
+    "Firecracker": ["firecracker", "fire cracker", "ಪಟಾಕಿ"],
+}
+
+
+def _detect_weapons(text):
+    """Regex word-boundary match of the narrative against
+    WEAPON_MO_DICTIONARY. Returns (labels, matched_terms) — labels is
+    the ordered, de-duplicated list of canonical Weapon/MO labels to
+    surface as their own field; matched_terms is the set of raw
+    surface forms that hit, used to keep the same phrase from also
+    showing up as a generic Zia keyword chip right next to it."""
+    labels = []
+    matched_terms = set()
+    for label, terms in WEAPON_MO_DICTIONARY.items():
+        for term in terms:
+            if re.search(r"\b" + re.escape(term.lower()) + r"\b", text.lower()):
+                if label not in labels:
+                    labels.append(label)
+                matched_terms.add(term.lower())
+                break
+    return labels, matched_terms
+
 
 def _extract_fir_entities(app, officer, text):
     lookups = _lookups(app)
@@ -2055,12 +2123,20 @@ def _extract_fir_entities(app, officer, text):
         "locations": [],
         "keywords": [],
         "keyphrases": [],
+        "weapons": [],
         "suggestedCrimeSubheadId": "",
         "suggestedCrimeSubheadName": "",
         "suggestedDistrictId": "",
         "suggestedDistrictName": "",
         "ziaAvailable": True,
     }
+
+    # Dictionary match runs regardless of Zia's availability — it's
+    # pure regex over the raw text, so a "Weapon: Knife" style field
+    # still shows up even if Zia Services is down.
+    weapon_labels, weapon_terms = _detect_weapons(text)
+    result["weapons"] = weapon_labels
+
     try:
         zia = app.zia()
         docs = [text[:1500]]  # Zia Text Analytics input cap
@@ -2073,8 +2149,10 @@ def _extract_fir_entities(app, officer, text):
         result["locations"] = sorted({e["token"] for e in entities if e.get("ner_tag") in ZIA_LOCATION_TAGS})
 
         kw = ((kw_data or [{}])[0] or {}).get("keyword_extractor", {}) or {}
-        result["keywords"] = (kw.get("keywords") or [])[:8]
-        result["keyphrases"] = (kw.get("keyphrases") or [])[:5]
+        # Anything that already landed a dedicated Weapon/MO field
+        # shouldn't also show up as an undifferentiated generic chip.
+        result["keywords"] = [k for k in (kw.get("keywords") or []) if k.lower() not in weapon_terms][:8]
+        result["keyphrases"] = [k for k in (kw.get("keyphrases") or []) if k.lower() not in weapon_terms][:5]
     except Exception as e:
         logging.getLogger().warning(f"Zia text mining unavailable, continuing without it: {e}")
         result["ziaAvailable"] = False
@@ -2103,7 +2181,7 @@ def extract_fir_entities(app, request, officer, audit):
     if not text:
         return make_response(jsonify({"error": "text is required"}), 400)
     result = _extract_fir_entities(app, officer, text)
-    audit["record_count"] = len(result["persons"]) + len(result["locations"])
+    audit["record_count"] = len(result["persons"]) + len(result["locations"]) + len(result["weapons"])
     return make_response(jsonify(result), 200)
 
 

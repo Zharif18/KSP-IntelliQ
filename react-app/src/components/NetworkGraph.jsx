@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { forceSimulation, forceLink, forceManyBody, forceCenter, forceCollide, forceX, forceY } from "d3-force";
-import { Search, SlidersHorizontal, X, MapPin, AlertTriangle, History, Clock, Gavel, Sparkles, Printer, Users, ZoomIn, ZoomOut, Maximize2, Shield } from "lucide-react";
+import { Search, SlidersHorizontal, X, MapPin, AlertTriangle, History, Clock, Gavel, Sparkles, Printer, Users, ZoomIn, ZoomOut, Maximize2, Shield, Maximize, Minimize } from "lucide-react";
 
 /* ---------------------------------------------------------------------
    Calls the real backend route:
@@ -45,7 +45,7 @@ const MOCK_GRAPH = {
   ],
 };
 
-const W = 900, H = 560;
+const DEFAULT_W = 900, DEFAULT_H = 560;
 
 export default function NetworkGraph() {
   const [lookups, setLookups] = useState(null);
@@ -61,6 +61,7 @@ export default function NetworkGraph() {
 
   const [positions, setPositions] = useState({}); // id -> {x, y}
   const [hovered, setHovered] = useState(null); // node id currently hovered
+  const [hoverPos, setHoverPos] = useState(null); // cursor pos (wrap-relative) for the hover tooltip
   const [profile, setProfile] = useState(null);
   const [profileLoading, setProfileLoading] = useState(false);
   const [profileError, setProfileError] = useState(null);
@@ -69,9 +70,47 @@ export default function NetworkGraph() {
   const [briefError, setBriefError] = useState(null);
   const simRef = useRef(null);
   const svgRef = useRef(null);
+  const wrapRef = useRef(null);
   const dragNode = useRef(null);
   const [transform, setTransform] = useState({ x: 0, y: 0, k: 1 });
   const panState = useRef(null);
+
+  // Fullscreen: gives the force layout real extra room to spread nodes
+  // into (not just a bigger stretched view of the same 900x560 layout),
+  // and is implemented with plain fixed positioning rather than the
+  // browser Fullscreen API — requestFullscreen() throws/rejects inside
+  // sandboxed iframes and some embedded contexts, which is exactly where
+  // this app tends to run, so a CSS-only overlay avoids that failure
+  // mode entirely.
+  const [fullscreen, setFullscreen] = useState(false);
+  const [dims, setDims] = useState({ w: DEFAULT_W, h: DEFAULT_H });
+  const W = dims.w, H = dims.h;
+
+  const enterFullscreen = useCallback(() => {
+    const margin = 16;
+    setDims({ w: Math.max(320, window.innerWidth - margin * 2), h: Math.max(320, window.innerHeight - margin * 2) });
+    setFullscreen(true);
+  }, []);
+  const exitFullscreen = useCallback(() => {
+    setDims({ w: DEFAULT_W, h: DEFAULT_H });
+    setFullscreen(false);
+  }, []);
+
+  useEffect(() => {
+    if (!fullscreen) return;
+    const margin = 16;
+    const onResize = () => setDims({ w: Math.max(320, window.innerWidth - margin * 2), h: Math.max(320, window.innerHeight - margin * 2) });
+    const onKey = (ev) => { if (ev.key === "Escape") exitFullscreen(); };
+    window.addEventListener("resize", onResize);
+    window.addEventListener("keydown", onKey);
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("resize", onResize);
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prevOverflow;
+    };
+  }, [fullscreen, exitFullscreen]);
 
   useEffect(() => {
     fetchJSON("get_lookups").then(setLookups).catch(() => setLookups(null));
@@ -143,7 +182,7 @@ export default function NetworkGraph() {
     nodes.forEach((d) => { pos[d.id] = { x: d.x, y: d.y }; });
     setPositions(pos);
     simRef.current = { sim, nodes, links };
-  }, [rawGraph]);
+  }, [rawGraph, W, H]);
 
   const districtOptions = lookups?.districts || [];
 
@@ -197,7 +236,7 @@ export default function NetworkGraph() {
         y: cy - ((cy - t.y) / t.k) * k,
       };
     });
-  }, []);
+  }, [W, H]);
 
   const fitToView = useCallback(() => {
     const ids = Object.keys(positions);
@@ -210,7 +249,7 @@ export default function NetworkGraph() {
     const k = Math.min(2, Math.max(0.4, Math.min((W - pad * 2) / spanX, (H - pad * 2) / spanY)));
     const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
     setTransform({ x: W / 2 - cx * k, y: H / 2 - cy * k, k });
-  }, [positions]);
+  }, [positions, W, H]);
 
   // Neighbor set for whichever node is hovered (falls back to selected) —
   // drives the "highlight this node's ties, fade the rest" dimming below,
@@ -261,6 +300,15 @@ export default function NetworkGraph() {
       });
     }
   };
+  // Tooltip follows the cursor, in coordinates relative to the canvas
+  // wrapper (so it can be positioned with plain absolute CSS regardless
+  // of pan/zoom/viewBox scaling). No debounce — it needs to appear the
+  // instant the pointer lands on a node, not after a delay.
+  const updateHoverPos = useCallback((ev) => {
+    const rect = wrapRef.current.getBoundingClientRect();
+    setHoverPos({ x: ev.clientX - rect.left, y: ev.clientY - rect.top });
+  }, []);
+
   const openProfile = (personKey) => {
     setProfile(null);
     setProfileError(null);
@@ -335,6 +383,11 @@ export default function NetworkGraph() {
           border-radius: 6px; color: var(--text); padding: 5px 8px; font-size: 12px; }
         .net-canvas-wrap { position: relative; background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
           overflow: hidden; }
+        .net-fullscreen-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 999; }
+        .net-canvas-wrap.net-fullscreen { position: fixed; top: 16px; left: 16px; right: 16px; bottom: 16px;
+          z-index: 1000; width: auto; height: auto; box-shadow: 0 20px 60px rgba(0,0,0,0.5); }
+        .net-fullscreen-exit { position: absolute; top: 12px; right: 12px; z-index: 1001; background: var(--panel);
+          box-shadow: 0 2px 10px rgba(0,0,0,0.25); }
         .net-side { position: absolute; top: 0; right: 0; bottom: 0; width: 260px; background: var(--panel-raised);
           border-left: 1px solid var(--border); padding: 18px; overflow-y: auto; }
         .net-side-close { position: absolute; top: 12px; right: 12px; cursor: pointer; color: var(--muted); }
@@ -345,6 +398,13 @@ export default function NetworkGraph() {
         .net-chip { display: inline-block; background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
           padding: 3px 8px; font-size: 11px; color: var(--text); margin: 2px 4px 2px 0; }
         .net-empty { padding: 60px 20px; text-align: center; color: var(--muted); font-size: 13px; }
+        .net-tooltip { position: absolute; z-index: 500; pointer-events: none; background: var(--panel-raised);
+          border: 1px solid var(--border); border-radius: 8px; padding: 9px 11px; box-shadow: 0 6px 20px rgba(0,0,0,0.3);
+          font-size: 11.5px; line-height: 1.5; }
+        .net-tooltip-title { font-weight: 700; color: var(--text); margin-bottom: 3px; font-size: 12.5px; }
+        .net-tooltip-row { color: var(--text); }
+        .net-tooltip-muted { color: var(--muted); font-size: 11px; margin-top: 2px; }
+        .net-tooltip-flag { color: var(--wine); font-weight: 600; }
         .net-profile-btn { display: flex; align-items: center; gap: 7px; margin-top: 4px; padding: 9px 12px;
           border-radius: 8px; background: var(--gold); color: var(--ink); font-size: 12px; font-weight: 700;
           cursor: pointer; }
@@ -407,6 +467,9 @@ export default function NetworkGraph() {
           <div className="net-btn net-zoom-btn" title="Zoom out" onClick={() => zoomBy(0.85)}><ZoomOut size={13} /></div>
           <div className="net-btn net-zoom-btn" title="Zoom in" onClick={() => zoomBy(1.15)}><ZoomIn size={13} /></div>
           <div className="net-btn net-zoom-btn" title="Fit to view" onClick={fitToView}><Maximize2 size={13} /></div>
+          <div className="net-btn net-zoom-btn" title={fullscreen ? "Exit fullscreen (Esc)" : "Fullscreen"} onClick={fullscreen ? exitFullscreen : enterFullscreen}>
+            {fullscreen ? <Minimize size={13} /> : <Maximize size={13} />}
+          </div>
         </div>
         {rawGraph?.nodes?.length >= 120 && (
           <div className="net-cap-hint" title="Showing the first 120 people for this filter. Narrow with District or Min. cases to see the rest.">
@@ -439,7 +502,17 @@ export default function NetworkGraph() {
       )}
 
       {/* Canvas */}
-      <div className="net-canvas-wrap" style={{ height: H }}>
+      {fullscreen && <div className="net-fullscreen-backdrop" onClick={exitFullscreen} />}
+      <div
+        ref={wrapRef}
+        className={`net-canvas-wrap ${fullscreen ? "net-fullscreen" : ""}`}
+        style={fullscreen ? undefined : { height: H }}
+      >
+        {fullscreen && (
+          <div className="net-btn net-fullscreen-exit" title="Exit fullscreen (Esc)" onClick={exitFullscreen}>
+            <Minimize size={13} /> Exit fullscreen
+          </div>
+        )}
         {visibleNodes.length === 0 ? (
           <div className="net-empty">No matching persons or locations in this network.</div>
         ) : (
@@ -467,14 +540,22 @@ export default function NetworkGraph() {
                 // not touching it — this is what actually declutters a
                 // dense graph instead of just letting everything sit at
                 // equal, competing opacity.
-                const inFocus = !focusNeighbors || (focusNeighbors.has(sId) && focusNeighbors.has(tId));
+                const hasFocus = !!focusNeighbors;
+                const inFocus = !hasFocus || (focusNeighbors.has(sId) && focusNeighbors.has(tId));
+                // Three tiers instead of two: a muted resting opacity so the
+                // whole graph isn't shouting at once, a bright tier for
+                // edges touching the focused node, and a near-invisible
+                // tier for everything else once focus narrows the view.
+                const strokeOpacity = hasFocus
+                  ? (inFocus ? (isCo ? 0.65 : 0.45) : 0.05)
+                  : (isCo ? 0.32 : 0.2);
                 return (
                   <line
                     key={i}
                     x1={s.x} y1={s.y} x2={t.x} y2={t.y}
                     stroke={isCo ? "var(--wine)" : "var(--border)"}
                     strokeWidth={isCo ? Math.min(1 + e.weight, 5) : 1.2}
-                    strokeOpacity={inFocus ? (isCo ? 0.55 : 0.4) : 0.08}
+                    strokeOpacity={strokeOpacity}
                     strokeDasharray={isCo ? "0" : "3,3"}
                     style={{ transition: "stroke-opacity 120ms ease" }}
                   />
@@ -497,8 +578,9 @@ export default function NetworkGraph() {
                     key={n.id}
                     transform={`translate(${p.x},${p.y})`}
                     onPointerDown={(ev) => { ev.stopPropagation(); dragNode.current = { id: n.id }; }}
-                    onPointerEnter={() => setHovered(n.id)}
-                    onPointerLeave={() => setHovered((h) => (h === n.id ? null : h))}
+                    onPointerEnter={(ev) => { setHovered(n.id); updateHoverPos(ev); }}
+                    onPointerMove={(ev) => { if (!dragNode.current) updateHoverPos(ev); }}
+                    onPointerLeave={() => { setHovered((h) => (h === n.id ? null : h)); setHoverPos(null); }}
                     onClick={() => setSelected(n)}
                     style={{ cursor: "pointer", opacity: inFocus ? 1 : 0.25, transition: "opacity 120ms ease" }}
                   >
@@ -517,6 +599,40 @@ export default function NetworkGraph() {
             </g>
           </svg>
         )}
+
+        {hovered && hoverPos && (() => {
+          const n = rawGraph?.nodes?.find((x) => x.id === hovered);
+          if (!n) return null;
+          const wrapEl = wrapRef.current;
+          const wrapW = wrapEl ? wrapEl.clientWidth : 900;
+          const wrapH = wrapEl ? wrapEl.clientHeight : H;
+          const tipW = 220;
+          // Flip to the left/above the cursor if it would run off the edge,
+          // so the tooltip never gets clipped by the canvas border.
+          const left = hoverPos.x + 18 + tipW > wrapW ? hoverPos.x - tipW - 14 : hoverPos.x + 18;
+          const top = hoverPos.y + 130 > wrapH ? hoverPos.y - 110 : hoverPos.y + 16;
+          return (
+            <div className="net-tooltip" style={{ left, top, width: tipW }}>
+              <div className="net-tooltip-title">{n.label}</div>
+              {n.type === "location" ? (
+                <div className="net-tooltip-row">Police Station</div>
+              ) : (
+                <>
+                  <div className="net-tooltip-row">
+                    {n.caseCount} case{n.caseCount === 1 ? "" : "s"}
+                    {n.repeatOffender && <span className="net-tooltip-flag"> · Repeat offender</span>}
+                  </div>
+                  {n.stations?.length > 0 && (
+                    <div className="net-tooltip-row net-tooltip-muted">{n.stations.join(", ")}</div>
+                  )}
+                  {n.crimeTypes?.length > 0 && (
+                    <div className="net-tooltip-row net-tooltip-muted">{n.crimeTypes.join(", ")}</div>
+                  )}
+                </>
+              )}
+            </div>
+          );
+        })()}
 
         {selected && (
           <div className="net-side">

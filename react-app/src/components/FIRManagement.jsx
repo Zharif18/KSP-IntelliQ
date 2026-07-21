@@ -1,5 +1,5 @@
-import { useState, useEffect, useRef } from "react";
-import { Search, Plus, X, FileText, Lock, Eye, Sparkles, Mic, Square, Link2, MapPin, User } from "lucide-react";
+import { useState, useEffect } from "react";
+import { Search, Plus, X, FileText, Lock, Eye, Sparkles, Link2, MapPin, User, Crosshair } from "lucide-react";
 
 /* ---------------------------------------------------------------------
    Calls the real backend routes:
@@ -53,12 +53,6 @@ export default function FIRManagement() {
   const [extraction, setExtraction] = useState(null);
   const [extracting, setExtracting] = useState(false);
   const [extractionError, setExtractionError] = useState(null);
-
-  // Multilingual voice-to-FIR (Web Speech API — browser-native, no server call)
-  const [listening, setListening] = useState(false);
-  const [voiceLang, setVoiceLang] = useState("en-IN");
-  const [voiceError, setVoiceError] = useState(null);
-  const recognitionRef = useRef(null);
 
   // Duplicate/Linked FIR Detection
   const [linkedMatches, setLinkedMatches] = useState(null);
@@ -137,40 +131,6 @@ export default function FIRManagement() {
     }
   };
 
-  // --- Multilingual voice-to-FIR: browser-native Web Speech API, no
-  // server round-trip. 'en-IN' / 'kn-IN' cover English and Kannada
-  // dictation; support depends on the browser (best in Chrome).
-  const toggleListening = () => {
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-      setVoiceError("Voice input isn't supported in this browser — try Chrome.");
-      return;
-    }
-    if (listening) {
-      recognitionRef.current?.stop();
-      return;
-    }
-    setVoiceError(null);
-    const recognition = new SpeechRecognition();
-    recognition.lang = voiceLang;
-    recognition.interimResults = false;
-    recognition.continuous = true;
-    recognition.onresult = (event) => {
-      let transcript = "";
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        transcript += event.results[i][0].transcript;
-      }
-      if (transcript.trim()) {
-        setForm((f) => ({ ...f, brief_facts: (f.brief_facts ? f.brief_facts + " " : "") + transcript.trim() }));
-      }
-    };
-    recognition.onerror = (event) => setVoiceError(`Voice input error: ${event.error}`);
-    recognition.onend = () => setListening(false);
-    recognitionRef.current = recognition;
-    recognition.start();
-    setListening(true);
-  };
-
   useEffect(() => {
     Promise.all([fetchJSON("get_lookups"), fetchJSON("get_current_officer")])
       .then(([lookupData, officerData]) => {
@@ -206,10 +166,8 @@ export default function FIRManagement() {
 
   const closeForm = () => {
     setShowForm(false);
-    if (listening) recognitionRef.current?.stop();
     setExtraction(null);
     setExtractionError(null);
-    setVoiceError(null);
   };
 
   const submitFir = async () => {
@@ -291,14 +249,6 @@ export default function FIRManagement() {
         .field-textarea { resize: vertical; min-height: 60px; }
         .modal-actions { display: flex; gap: 8px; margin-top: 18px; }
 
-        .field-label-row { display: flex; align-items: center; justify-content: space-between; margin-top: 12px; margin-bottom: 5px; }
-        .fir-voice-controls { display: flex; gap: 6px; align-items: center; }
-        .fir-voice-lang { background: var(--panel-raised); border: 1px solid var(--border); border-radius: 6px;
-          color: var(--text); font-size: 10.5px; padding: 3px 5px; outline: none; }
-        .fir-mic-btn { display: flex; align-items: center; gap: 4px; background: var(--panel-raised); border: 1px solid var(--border);
-          border-radius: 6px; padding: 4px 9px; font-size: 10.5px; color: var(--text); cursor: pointer; font-weight: 600; }
-        .fir-mic-btn:hover { border-color: var(--gold); color: var(--gold-strong); }
-        .fir-mic-btn.recording { background: var(--wine); border-color: var(--wine); color: #fff; }
         .fir-extract-row { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
         .fir-inline-note { font-size: 10.5px; color: var(--muted); margin-top: 4px; }
         .fir-inline-note.error { color: var(--wine); }
@@ -309,6 +259,10 @@ export default function FIRManagement() {
         .fir-apply-btn { background: var(--gold); color: var(--ink); border-radius: 6px; padding: 4px 9px;
           font-size: 10.5px; font-weight: 700; cursor: pointer; white-space: nowrap; }
         .fir-apply-btn:hover { background: var(--gold-strong); }
+        .fir-extract-weapon { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 8px;
+          padding: 5px 9px; background: var(--panel); border: 1px solid var(--gold); border-radius: 6px;
+          font-size: 11.5px; color: var(--text); }
+        .fir-extract-weapon-sep { color: var(--muted); margin: 0 2px; }
         .fir-extract-group { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; margin-bottom: 6px; color: var(--muted); }
         .fir-extract-group:last-child { margin-bottom: 0; }
         .fir-extract-chip { background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
@@ -421,22 +375,9 @@ export default function FIRManagement() {
             <input className="field-input" value={form.longitude}
               onChange={(e) => setForm({ ...form, longitude: e.target.value })} placeholder="e.g. 77.7500" />
 
-            <div className="field-label-row">
-              <span className="field-label" style={{ marginBottom: 0 }}>Brief Facts</span>
-              <div className="fir-voice-controls">
-                <select className="fir-voice-lang" value={voiceLang} onChange={(e) => setVoiceLang(e.target.value)} disabled={listening}>
-                  <option value="en-IN">English</option>
-                  <option value="kn-IN">ಕನ್ನಡ (Kannada)</option>
-                </select>
-                <div className={`fir-mic-btn ${listening ? "recording" : ""}`} onClick={toggleListening} title="Voice-to-FIR dictation">
-                  {listening ? <Square size={12} /> : <Mic size={12} />}
-                  {listening ? "Stop" : "Dictate"}
-                </div>
-              </div>
-            </div>
+            <div className="field-label" style={{ marginTop: 12 }}>Brief Facts</div>
             <textarea className="field-textarea" value={form.brief_facts}
-              onChange={(e) => setForm({ ...form, brief_facts: e.target.value })} placeholder="Brief incident description — type, or use Dictate to speak it in English or Kannada" />
-            {voiceError && <div className="fir-inline-note error">{voiceError}</div>}
+              onChange={(e) => setForm({ ...form, brief_facts: e.target.value })} placeholder="Brief incident description" />
 
             <div className="fir-extract-row">
               <div className="fir-btn ghost" style={{ fontSize: 11.5 }} onClick={runExtraction}>
@@ -462,6 +403,17 @@ export default function FIRManagement() {
                     )}
                   </div>
                 )}
+                {extraction.weapons && extraction.weapons.length > 0 && (
+                  <div className="fir-extract-weapon">
+                    <Crosshair size={12} />
+                    {extraction.weapons.map((w, i) => (
+                      <span key={w}>
+                        <strong>Weapon{extraction.weapons.length > 1 ? ` ${i + 1}` : ""}:</strong> {w}
+                        {i < extraction.weapons.length - 1 && <span className="fir-extract-weapon-sep">·</span>}
+                      </span>
+                    ))}
+                  </div>
+                )}
                 {extraction.persons.length > 0 && (
                   <div className="fir-extract-group">
                     <User size={11} /> {extraction.persons.map((p) => (
@@ -484,7 +436,8 @@ export default function FIRManagement() {
                   </div>
                 )}
                 {extraction.persons.length === 0 && extraction.locations.length === 0 &&
-                  extraction.keywords.length === 0 && extraction.keyphrases.length === 0 && (
+                  extraction.keywords.length === 0 && extraction.keyphrases.length === 0 &&
+                  (!extraction.weapons || extraction.weapons.length === 0) && (
                     <div className="fir-inline-note">No entities detected in this text yet.</div>
                 )}
               </div>
