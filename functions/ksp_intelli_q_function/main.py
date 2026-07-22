@@ -72,6 +72,8 @@ def handler(request: Request):
             ("/add_case", "POST"): add_case,
             ("/update_case_status", "PUT"): update_case_status,
             ("/get_case_detail", "GET"): get_case_detail,
+            ("/get_case_edit_detail", "GET"): get_case_edit_detail,
+            ("/update_case_detail", "PUT"): update_case_detail,
             ("/get_linked_fir_matches", "GET"): get_linked_fir_matches,
             ("/extract_fir_entities", "POST"): extract_fir_entities,
             ("/get_network_graph", "GET"): get_network_graph,
@@ -693,6 +695,208 @@ def update_case_status(app, request, officer, audit):
 
 
 # ---------------------------------------------------------------------
+# Shared by get_case_edit_detail / update_case_detail.
+#
+# RBAC: amending FIR content (crime type, narrative, and the
+# complainant/victim/accused rolls) is deliberately a NARROWER
+# permission than viewing a case or updating its status — it's
+# restricted to the direct case holder (OWN_CASES scope where the case
+# is the caller's own, or STATION scope where it's the caller's own
+# station's case). A district SP or the SCRB Analyst can have
+# oversight visibility into a case (_case_in_officer_scope in_scope
+# True) without being allowed to rewrite what's in it — that mirrors
+# how a real investigating officer/station amends an FIR while a
+# reviewing SP does not. Reassigning a case to a different station or
+# officer is a transfer workflow, not an edit, so police_station_id /
+# police_person_id are intentionally NOT editable here.
+# ---------------------------------------------------------------------
+def _case_edit_permission(app, officer, case_row):
+    in_scope, is_direct_holder = _case_in_officer_scope(app, officer, case_row)
+    if not in_scope:
+        return False, make_response(jsonify({"error": "forbidden", "message": "That case is outside your access scope."}), 403)
+    if not is_direct_holder or officer["role_name"] == "SCRB Analyst":
+        return False, make_response(jsonify({"error": "forbidden", "message": "Only the investigating officer or station may amend this FIR."}), 403)
+    return True, None
+
+
+# ---------------------------------------------------------------------
+# GET /get_case_edit_detail?case_master_id=
+#
+# Pre-fills the amend-FIR form. Unlike get_case_detail, this returns
+# UNREDACTED names — masking exists to limit exposure to viewers
+# beyond the case's own officer/station (oversight roles, analysts,
+# etc.), but this route is only reachable by the direct holder in the
+# first place (_case_edit_permission), i.e. someone who already
+# legitimately holds the case file. A masked juvenile/victim name
+# would make it impossible to correct a typo in it.
+# ---------------------------------------------------------------------
+def get_case_edit_detail(app, request, officer, audit):
+    audit["resource_type"] = "case_edit_detail"
+    case_id = (request.args.get("case_master_id") or "").strip()
+    if not case_id:
+        return make_response(jsonify({"error": "case_master_id is required"}), 400)
+    audit["resource_id"] = case_id
+
+    rows = zcql_rows(app, "CaseMaster", f"SELECT * FROM CaseMaster WHERE CaseMasterID = '{case_id}'")
+    if not rows:
+        return make_response(jsonify({"error": "Case not found"}), 404)
+    case = rows[0]
+
+    can_edit, err = _case_edit_permission(app, officer, case)
+    if not can_edit:
+        return err
+
+    accused_rows = zcql_rows(app, "Accused",
+        f"SELECT AccusedMasterID, AccusedName, AgeYear, GenderID FROM Accused WHERE CaseMasterID = '{case_id}'")
+    victim_rows = zcql_rows(app, "Victim",
+        f"SELECT VictimMasterID, VictimName, AgeYear, GenderID FROM Victim WHERE CaseMasterID = '{case_id}'")
+    complainant_rows = zcql_rows(app, "ComplainantDetails",
+        f"SELECT ComplainantID, ComplainantName, AgeYear, Occupation, GenderID FROM ComplainantDetails WHERE CaseMasterID = '{case_id}'")
+
+    complainant = complainant_rows[0] if complainant_rows else {}
+
+    return make_response(jsonify({
+        "case": {
+            "caseMasterId": case["CaseMasterID"],
+            "crime_subhead_id": case.get("CrimeMinorHeadID", ""),
+            "incident_date": case.get("CrimeRegisteredDate", ""),
+            "latitude": case.get("latitude", 0),
+            "longitude": case.get("longitude", 0),
+            "brief_facts": case.get("BriefFacts", ""),
+        },
+        "complainant": {
+            "id": complainant.get("ComplainantID"),
+            "name": complainant.get("ComplainantName", ""),
+            "age": complainant.get("AgeYear"),
+            "gender": complainant.get("GenderID", ""),
+            "occupation": complainant.get("Occupation", ""),
+        },
+        "victims": [
+            {"id": v["VictimMasterID"], "name": v.get("VictimName", ""), "age": v.get("AgeYear"), "gender": v.get("GenderID", "")}
+            for v in victim_rows
+        ],
+        "accused": [
+            {"id": a["AccusedMasterID"], "name": a.get("AccusedName", ""), "age": a.get("AgeYear"), "gender": a.get("GenderID", "")}
+            for a in accused_rows
+        ],
+    }), 200)
+
+
+# ---------------------------------------------------------------------
+# PUT /update_case_detail
+#
+# The actual amend-FIR write path. Same RBAC gate as
+# get_case_edit_detail (_case_edit_permission — direct holder only).
+#
+# Victims/accused are synced against what's already stored: entries
+# with an existing id are updated in place, entries with no id are new
+# rows inserted for this edit, and any previously-stored row whose id
+# is no longer present in the payload is deleted — so the UI can just
+# submit "the current full list" without the caller having to compute
+# a diff itself. Complainant is a single row, always updated in place
+# (a case should never end up with zero or multiple complainants).
+# ---------------------------------------------------------------------
+def update_case_detail(app, request, officer, audit):
+    audit["resource_type"] = "case_detail_update"
+    body = request.get_json(force=True)
+
+    case_id = body.get("case_master_id")
+    if not case_id:
+        return make_response(jsonify({"error": "case_master_id is required"}), 400)
+    audit["resource_id"] = case_id
+
+    rows = zcql_rows(app, "CaseMaster", f"SELECT ROWID, PolicePersonID, PoliceStationID FROM CaseMaster WHERE CaseMasterID = '{case_id}'")
+    if not rows:
+        return make_response(jsonify({"error": "Case not found"}), 404)
+    case = rows[0]
+
+    can_edit, err = _case_edit_permission(app, officer, case)
+    if not can_edit:
+        return err
+
+    complainant = body.get("complainant") or {}
+    if not complainant.get("name"):
+        return make_response(jsonify({"error": "Missing required fields: complainant.name"}), 400)
+
+    victims = [v for v in (body.get("victims") or []) if v.get("name")]
+    if not victims:
+        return make_response(jsonify({"error": "Missing required fields: victims[].name"}), 400)
+
+    accused = [a for a in (body.get("accused") or []) if a.get("name")]
+
+    crime_subhead_id = body.get("crime_subhead_id")
+    if crime_subhead_id:
+        subhead = zcql_rows(app, "CrimeSubHead", f"SELECT CrimeHeadID FROM CrimeSubHead WHERE CrimeSubHeadID = '{crime_subhead_id}'")
+        if not subhead:
+            return make_response(jsonify({"error": "Unknown crime_subhead_id"}), 400)
+
+    case_update = {"ROWID": rows[0]["ROWID"]}
+    if crime_subhead_id:
+        case_update["CrimeMinorHeadID"] = crime_subhead_id
+    if "incident_date" in body:
+        case_update["CrimeRegisteredDate"] = body.get("incident_date", "")
+        case_update["IncidentFromDate"] = body.get("incident_date", "")
+        case_update["IncidentToDate"] = body.get("incident_date", "")
+    if "latitude" in body:
+        case_update["latitude"] = body.get("latitude", 0)
+    if "longitude" in body:
+        case_update["longitude"] = body.get("longitude", 0)
+    if "brief_facts" in body:
+        case_update["BriefFacts"] = body.get("brief_facts", "")
+
+    updated_case = app.datastore().table("CaseMaster").update_row(case_update)
+
+    # Complainant — single row, always update in place.
+    comp_id = complainant.get("id")
+    comp_fields = {
+        "ComplainantName": complainant.get("name"),
+        "AgeYear": complainant.get("age") or None,
+        "Occupation": complainant.get("occupation", ""),
+        "GenderID": complainant.get("gender", ""),
+    }
+    comp_table = app.datastore().table("ComplainantDetails")
+    if comp_id:
+        updated_complainant = comp_table.update_row({"ComplainantID": comp_id, **comp_fields}).get("row")
+    else:
+        ts = int(time.time() * 1000)
+        updated_complainant = comp_table.insert_row({"ComplainantID": f"COMP{ts}", "CaseMasterID": case_id, **comp_fields}).get("row")
+
+    def _sync_people(table_name, id_field, name_field, existing_rows, incoming, prefix):
+        table = app.datastore().table(table_name)
+        existing_ids = {r[id_field] for r in existing_rows}
+        incoming_ids = {p["id"] for p in incoming if p.get("id")}
+
+        for stale_id in existing_ids - incoming_ids:
+            table.delete_row(stale_id)
+
+        ts = int(time.time() * 1000)
+        out_rows = []
+        for i, p in enumerate(incoming):
+            fields = {name_field: p.get("name"), "AgeYear": p.get("age") or None, "GenderID": p.get("gender", "")}
+            if p.get("id"):
+                out_rows.append(table.update_row({id_field: p["id"], **fields}).get("row"))
+            else:
+                new_id = f"{prefix}{ts}{i}"
+                extra = {"VictimPolice": 0} if table_name == "Victim" else {"PersonID": f"A{i + 1}", "PersonKey": f"PER{ts}{i}"}
+                out_rows.append(table.insert_row({id_field: new_id, "CaseMasterID": case_id, **fields, **extra}).get("row"))
+        return out_rows
+
+    existing_victims = zcql_rows(app, "Victim", f"SELECT VictimMasterID FROM Victim WHERE CaseMasterID = '{case_id}'")
+    existing_accused = zcql_rows(app, "Accused", f"SELECT AccusedMasterID FROM Accused WHERE CaseMasterID = '{case_id}'")
+
+    updated_victims = _sync_people("Victim", "VictimMasterID", "VictimName", existing_victims, victims, "VIC")
+    updated_accused = _sync_people("Accused", "AccusedMasterID", "AccusedName", existing_accused, accused, "ACC")
+
+    return make_response(jsonify({
+        "message": "Case updated",
+        "case": updated_case.get("row"),
+        "complainant": updated_complainant,
+        "victims": updated_victims,
+        "accused": updated_accused,
+    }), 200)
+
+
+# ---------------------------------------------------------------------
 # GET /get_case_detail?case_master_id=
 #
 # The one place identity-bearing data (Accused, Victim, Complainant)
@@ -772,6 +976,12 @@ def get_case_detail(app, request, officer, audit):
 
     audit["record_count"] = len(accused_out) + len(victim_out) + len(complainant_out)
 
+    # Same "direct holder" concept _redact_victim already uses for
+    # victim-privacy masking — an SP overseeing a district or an SCRB
+    # Analyst can see this case, but only the investigating officer or
+    # their own station may amend it.
+    editable = viewer_has_case_access and officer["role_name"] != "SCRB Analyst"
+
     return make_response(jsonify({
         "case": {
             "caseMasterId": case["CaseMasterID"],
@@ -783,6 +993,7 @@ def get_case_detail(app, request, officer, audit):
             "status": status_name.get(case.get("CaseStatusID"), "Unknown"),
             "briefFacts": case.get("BriefFacts", ""),
             "sensitiveCase": crime_head_id in SENSITIVE_CRIME_HEADS,
+            "editable": editable,
         },
         "accused": accused_out,
         "victims": victim_out,

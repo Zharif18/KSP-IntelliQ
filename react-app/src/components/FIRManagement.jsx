@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Search, Plus, X, FileText, Lock, Eye, Sparkles, Link2, MapPin, User, Crosshair } from "lucide-react";
+import { Search, Plus, X, FileText, Lock, Eye, Sparkles, Link2, MapPin, User, Crosshair, Pencil } from "lucide-react";
 
 /* ---------------------------------------------------------------------
    Calls the real backend routes:
@@ -56,6 +56,12 @@ export default function FIRManagement() {
   const [detailError, setDetailError] = useState(null);
   const [detailForbidden, setDetailForbidden] = useState(false);
 
+  const [editMode, setEditMode] = useState(false);
+  const [editForm, setEditForm] = useState(null);
+  const [editLoading, setEditLoading] = useState(false);
+  const [editError, setEditError] = useState(null);
+  const [editSubmitting, setEditSubmitting] = useState(false);
+
   // FIR Text Mining (entity extraction on the Brief Facts narrative)
   const [extraction, setExtraction] = useState(null);
   const [extracting, setExtracting] = useState(false);
@@ -97,6 +103,94 @@ export default function FIRManagement() {
     setDetailForbidden(false);
     setLinkedMatches(null);
     setLinkedError(null);
+    setEditMode(false);
+    setEditForm(null);
+    setEditError(null);
+  };
+
+  const startEdit = () => {
+    if (!detailCaseId) return;
+    setEditError(null);
+    setEditLoading(true);
+    fetchJSON(`get_case_edit_detail?case_master_id=${encodeURIComponent(detailCaseId)}`)
+      .then((body) => {
+        setEditForm({
+          crime_subhead_id: body.case.crime_subhead_id || "",
+          incident_date: body.case.incident_date || "",
+          latitude: body.case.latitude ?? "",
+          longitude: body.case.longitude ?? "",
+          brief_facts: body.case.brief_facts || "",
+          complainant: {
+            id: body.complainant.id,
+            name: body.complainant.name || "",
+            age: body.complainant.age ?? "",
+            gender: body.complainant.gender || "",
+            occupation: body.complainant.occupation || "",
+          },
+          victims: body.victims.length
+            ? body.victims.map((v) => ({ id: v.id, name: v.name || "", age: v.age ?? "", gender: v.gender || "" }))
+            : [EmptyPerson()],
+          accused: body.accused.map((a) => ({ id: a.id, name: a.name || "", age: a.age ?? "", gender: a.gender || "" })),
+        });
+        setEditMode(true);
+      })
+      .catch((err) => setEditError(err.message))
+      .finally(() => setEditLoading(false));
+  };
+
+  const cancelEdit = () => {
+    setEditMode(false);
+    setEditForm(null);
+    setEditError(null);
+  };
+
+  const updateEditComplainant = (field, value) =>
+    setEditForm((f) => ({ ...f, complainant: { ...f.complainant, [field]: value } }));
+
+  const updateEditVictim = (idx, field, value) =>
+    setEditForm((f) => ({ ...f, victims: f.victims.map((v, i) => (i === idx ? { ...v, [field]: value } : v)) }));
+  const addEditVictim = () => setEditForm((f) => ({ ...f, victims: [...f.victims, EmptyPerson()] }));
+  const removeEditVictim = (idx) =>
+    setEditForm((f) => ({ ...f, victims: f.victims.filter((_, i) => i !== idx) }));
+
+  const updateEditAccused = (idx, field, value) =>
+    setEditForm((f) => ({ ...f, accused: f.accused.map((a, i) => (i === idx ? { ...a, [field]: value } : a)) }));
+  const addEditAccused = () => setEditForm((f) => ({ ...f, accused: [...f.accused, EmptyPerson()] }));
+  const removeEditAccused = (idx) =>
+    setEditForm((f) => ({ ...f, accused: f.accused.filter((_, i) => i !== idx) }));
+
+  const editFormValid =
+    editForm && editForm.complainant.name.trim() && editForm.victims.some((v) => v.name.trim());
+
+  const submitEdit = async () => {
+    if (!editFormValid || !detailCaseId) return;
+    setEditSubmitting(true);
+    setEditError(null);
+    try {
+      await fetchJSON("update_case_detail", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          case_master_id: detailCaseId,
+          crime_subhead_id: editForm.crime_subhead_id,
+          incident_date: editForm.incident_date,
+          latitude: editForm.latitude === "" ? 0 : Number(editForm.latitude),
+          longitude: editForm.longitude === "" ? 0 : Number(editForm.longitude),
+          brief_facts: editForm.brief_facts,
+          complainant: editForm.complainant,
+          victims: editForm.victims.filter((v) => v.name.trim()),
+          accused: editForm.accused.filter((a) => a.name.trim()),
+        }),
+      });
+      setEditMode(false);
+      setEditForm(null);
+      openCaseDetail(detailCaseId); // refresh the read-only view with saved changes
+      runSearch(); // list row (crime type / brief facts) may have changed too
+    } catch (err) {
+      setEditError(err.message);
+    } finally {
+      setEditSubmitting(false);
+    }
   };
 
   const checkLinkedFirs = () => {
@@ -596,9 +690,18 @@ export default function FIRManagement() {
           <div className="modal" style={{ width: 420 }} onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
               <div className="modal-title">Case Detail — {detailCaseId}</div>
-              <X size={16} style={{ cursor: "pointer", color: "var(--muted)" }} onClick={closeCaseDetail} />
+              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                {detail?.case?.editable && !editMode && (
+                  <span className="fir-apply-btn" onClick={startEdit}>
+                    {editLoading ? "Loading…" : (<><Pencil size={11} style={{ verticalAlign: -1, marginRight: 3 }} />Edit</>)}
+                  </span>
+                )}
+                <X size={16} style={{ cursor: "pointer", color: "var(--muted)" }} onClick={closeCaseDetail} />
+              </div>
             </div>
             <div className="modal-body">
+
+            {editError && <div className="fir-inline-note error">{editError}</div>}
 
             {detailLoading && <div className="fir-empty" style={{ padding: 20 }}>Loading case detail…</div>}
 
@@ -611,7 +714,7 @@ export default function FIRManagement() {
 
             {detailError && <div className="fir-error">{detailError}</div>}
 
-            {detail && (
+            {detail && !editMode && (
               <>
                 <div style={{ fontSize: 12.5, color: "var(--muted)" }}>
                   {detail.case.crimeType} · {detail.case.station} · {detail.case.district}
@@ -703,7 +806,120 @@ export default function FIRManagement() {
                 </div>
               </>
             )}
+
+            {editMode && editForm && (
+              <>
+                <div className="field-label" style={{ marginTop: 0 }}>Crime Type</div>
+                <select className="field-input" value={editForm.crime_subhead_id}
+                  onChange={(e) => setEditForm({ ...editForm, crime_subhead_id: e.target.value })}>
+                  <option value="">Select…</option>
+                  {(lookups?.crime_subheads || []).map((c) => (
+                    <option key={c.CrimeSubHeadID} value={c.CrimeSubHeadID}>{c.CrimeHeadName}</option>
+                  ))}
+                </select>
+
+                <div className="field-label">Incident Date</div>
+                <input type="date" className="field-input" value={editForm.incident_date}
+                  onChange={(e) => setEditForm({ ...editForm, incident_date: e.target.value })} />
+
+                <div className="field-label">Latitude</div>
+                <input className="field-input" value={editForm.latitude}
+                  onChange={(e) => setEditForm({ ...editForm, latitude: e.target.value })} placeholder="e.g. 12.9698" />
+
+                <div className="field-label">Longitude</div>
+                <input className="field-input" value={editForm.longitude}
+                  onChange={(e) => setEditForm({ ...editForm, longitude: e.target.value })} placeholder="e.g. 77.7500" />
+
+                <div className="fir-section-header" style={{ marginTop: 16 }}>
+                  <User size={12} /> Complainant Details
+                </div>
+                <div className="field-label">Name *</div>
+                <input className="field-input" value={editForm.complainant.name}
+                  onChange={(e) => updateEditComplainant("name", e.target.value)} placeholder="Complainant full name" />
+                <div className="fir-person-row">
+                  <div style={{ flex: 1 }}>
+                    <div className="field-label">Age</div>
+                    <input className="field-input" value={editForm.complainant.age}
+                      onChange={(e) => updateEditComplainant("age", e.target.value)} placeholder="Age" />
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <div className="field-label">Gender</div>
+                    <select className="field-input" value={editForm.complainant.gender}
+                      onChange={(e) => updateEditComplainant("gender", e.target.value)}>
+                      <option value="">Select…</option>
+                      <option value="M">Male</option>
+                      <option value="F">Female</option>
+                    </select>
+                  </div>
+                </div>
+                <div className="field-label">Occupation</div>
+                <input className="field-input" value={editForm.complainant.occupation}
+                  onChange={(e) => updateEditComplainant("occupation", e.target.value)} placeholder="e.g. Farmer, Student…" />
+
+                <div className="fir-section-header" style={{ marginTop: 16 }}>
+                  <User size={12} /> Victim(s) *
+                </div>
+                {editForm.victims.map((v, idx) => (
+                  <div key={v.id || idx} className="fir-person-block">
+                    <div className="fir-person-row">
+                      <input className="field-input" style={{ flex: 2 }} value={v.name}
+                        onChange={(e) => updateEditVictim(idx, "name", e.target.value)} placeholder="Victim name" />
+                      <input className="field-input" style={{ flex: 1 }} value={v.age}
+                        onChange={(e) => updateEditVictim(idx, "age", e.target.value)} placeholder="Age" />
+                      <select className="field-input" style={{ flex: 1 }} value={v.gender}
+                        onChange={(e) => updateEditVictim(idx, "gender", e.target.value)}>
+                        <option value="">Gender</option>
+                        <option value="M">Male</option>
+                        <option value="F">Female</option>
+                      </select>
+                      {editForm.victims.length > 1 && (
+                        <X size={16} style={{ cursor: "pointer", color: "var(--muted)" }} onClick={() => removeEditVictim(idx)} />
+                      )}
+                    </div>
+                  </div>
+                ))}
+                <div className="fir-btn ghost" style={{ fontSize: 11.5, marginTop: 4 }} onClick={addEditVictim}>
+                  <Plus size={12} /> Add another victim
+                </div>
+
+                <div className="fir-section-header" style={{ marginTop: 16 }}>
+                  <User size={12} /> Accused (if known)
+                </div>
+                {editForm.accused.map((a, idx) => (
+                  <div key={a.id || idx} className="fir-person-block">
+                    <div className="fir-person-row">
+                      <input className="field-input" style={{ flex: 2 }} value={a.name}
+                        onChange={(e) => updateEditAccused(idx, "name", e.target.value)} placeholder="Accused name" />
+                      <input className="field-input" style={{ flex: 1 }} value={a.age}
+                        onChange={(e) => updateEditAccused(idx, "age", e.target.value)} placeholder="Age" />
+                      <select className="field-input" style={{ flex: 1 }} value={a.gender}
+                        onChange={(e) => updateEditAccused(idx, "gender", e.target.value)}>
+                        <option value="">Gender</option>
+                        <option value="M">Male</option>
+                        <option value="F">Female</option>
+                      </select>
+                      <X size={16} style={{ cursor: "pointer", color: "var(--muted)" }} onClick={() => removeEditAccused(idx)} />
+                    </div>
+                  </div>
+                ))}
+                <div className="fir-btn ghost" style={{ fontSize: 11.5, marginTop: 4 }} onClick={addEditAccused}>
+                  <Plus size={12} /> Add accused
+                </div>
+
+                <div className="field-label" style={{ marginTop: 12 }}>Brief Facts</div>
+                <textarea className="field-textarea" value={editForm.brief_facts}
+                  onChange={(e) => setEditForm({ ...editForm, brief_facts: e.target.value })} />
+              </>
+            )}
             </div>
+            {editMode && (
+              <div className="modal-actions">
+                <button className="fir-btn ghost" style={{ flex: 1, justifyContent: "center" }} onClick={cancelEdit}>Cancel</button>
+                <button className="fir-btn primary" style={{ flex: 1, justifyContent: "center" }} onClick={submitEdit} disabled={editSubmitting || !editFormValid}>
+                  {editSubmitting ? "Saving…" : "Save Changes"}
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}
