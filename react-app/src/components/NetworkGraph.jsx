@@ -112,6 +112,19 @@ export default function NetworkGraph() {
     };
   }, [fullscreen, exitFullscreen]);
 
+  // Belt-and-suspenders alongside overscroll-behavior: contain — locks the
+  // page behind the profile popup so scrolling to the top/bottom of the
+  // profile card never bleeds into scrolling the graph/dashboard underneath.
+  useEffect(() => {
+    if (profileLoading || profile || profileError) {
+      const prevOverflow = document.body.style.overflow;
+      document.body.style.overflow = "hidden";
+      return () => {
+        document.body.style.overflow = prevOverflow;
+      };
+    }
+  }, [profileLoading, profile, profileError]);
+
   useEffect(() => {
     fetchJSON("get_lookups").then(setLookups).catch(() => setLookups(null));
   }, []);
@@ -389,7 +402,7 @@ export default function NetworkGraph() {
         .net-fullscreen-exit { position: absolute; top: 12px; right: 12px; z-index: 1001; background: var(--panel);
           box-shadow: 0 2px 10px rgba(0,0,0,0.25); }
         .net-side { position: absolute; top: 0; right: 0; bottom: 0; width: 260px; background: var(--panel-raised);
-          border-left: 1px solid var(--border); padding: 18px; overflow-y: auto; }
+          border-left: 1px solid var(--border); padding: 18px; overflow-y: auto; overscroll-behavior: contain; }
         .net-side-close { position: absolute; top: 12px; right: 12px; cursor: pointer; color: var(--muted); }
         .net-side-title { font-size: 15px; font-weight: 700; color: var(--text); margin-bottom: 2px; }
         .net-side-sub { font-size: 10.5px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 16px; }
@@ -410,9 +423,11 @@ export default function NetworkGraph() {
           cursor: pointer; }
         .net-profile-btn:hover { background: var(--gold-strong); }
         .profile-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.55); z-index: 2000;
-          display: flex; align-items: center; justify-content: center; padding: 24px; }
+          display: flex; align-items: center; justify-content: center; padding: 24px; overscroll-behavior: contain; }
         .profile-card { background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
-          width: 720px; max-width: 100%; max-height: 85vh; overflow-y: auto; padding: 26px 28px; position: relative; }
+          width: 720px; max-width: 100%; max-height: 85vh; position: relative;
+          display: flex; flex-direction: column; overflow: hidden; }
+        .profile-body { padding: 26px 28px; overflow-y: auto; overscroll-behavior: contain; flex: 1 1 auto; min-height: 0; }
         .profile-close { position: absolute; top: 16px; right: 16px; cursor: pointer; color: var(--muted); }
         .profile-title { font-size: 17px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
         .profile-sub { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; margin: 4px 0 18px; }
@@ -693,6 +708,7 @@ export default function NetworkGraph() {
         <div className="profile-overlay" onClick={closeProfile}>
           <div className="profile-card" onClick={(e) => e.stopPropagation()}>
             <X className="profile-close" size={18} onClick={closeProfile} />
+            <div className="profile-body">
             {profileLoading ? (
               <div className="profile-loading">Building offender profile…</div>
             ) : profileError ? (
@@ -830,6 +846,7 @@ export default function NetworkGraph() {
                 )}
               </>
             )}
+            </div>
           </div>
         </div>
       )}

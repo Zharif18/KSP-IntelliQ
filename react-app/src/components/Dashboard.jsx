@@ -439,7 +439,8 @@ export default function KSPIntelliQDashboard() {
           border-bottom: 1px solid var(--border); }
         .assist-title { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--gold-strong); font-weight: 700; }
         .assist-close { color: var(--muted); cursor: pointer; display: flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 500; }
-        .assist-messages { flex: 1; overflow-y: auto; padding: 16px 18px; display: flex; flex-direction: column; gap: 10px; }
+        .assist-messages { flex: 1; overflow-y: auto; padding: 16px 18px; display: flex; flex-direction: column; gap: 10px;
+          overscroll-behavior: contain; }
         .msg { font-size: 12.5px; max-width: 88%; padding: 10px 12px; border-radius: 10px; line-height: 1.45; color: var(--text); }
         .msg.ai { background: var(--panel-raised); align-self: flex-start; }
         .msg.user { background: rgba(212,176,115,0.16); align-self: flex-end; }

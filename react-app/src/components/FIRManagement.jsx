@@ -21,6 +21,10 @@ async function fetchJSON(endpoint, opts) {
   return res.json();
 }
 
+function EmptyPerson() {
+  return { name: "", age: "", gender: "" };
+}
+
 function EmptyForm() {
   return {
     crime_subhead_id: "",
@@ -29,6 +33,9 @@ function EmptyForm() {
     latitude: "",
     longitude: "",
     brief_facts: "",
+    complainant: { name: "", age: "", gender: "", occupation: "" },
+    victims: [EmptyPerson()],
+    accused: [],
   };
 }
 
@@ -157,6 +164,19 @@ export default function FIRManagement() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lookups]);
 
+  // Belt-and-suspenders alongside overscroll-behavior: contain — locks the
+  // page behind a modal so reaching the top/bottom of the modal's own
+  // scroll never bleeds into scrolling the dashboard underneath it.
+  useEffect(() => {
+    if (showForm || detailCaseId) {
+      const prevOverflow = document.body.style.overflow;
+      document.body.style.overflow = "hidden";
+      return () => {
+        document.body.style.overflow = prevOverflow;
+      };
+    }
+  }, [showForm, detailCaseId]);
+
   const subheadName = (id) =>
     lookups?.crime_subheads.find((s) => s.CrimeSubHeadID === id)?.CrimeHeadName || "—";
   const unitName = (id) => lookups?.units.find((u) => u.UnitID === id)?.UnitName || "—";
@@ -170,8 +190,35 @@ export default function FIRManagement() {
     setExtractionError(null);
   };
 
+  const updateComplainant = (field, value) =>
+    setForm((f) => ({ ...f, complainant: { ...f.complainant, [field]: value } }));
+
+  const updateVictim = (idx, field, value) =>
+    setForm((f) => ({
+      ...f,
+      victims: f.victims.map((v, i) => (i === idx ? { ...v, [field]: value } : v)),
+    }));
+  const addVictim = () => setForm((f) => ({ ...f, victims: [...f.victims, EmptyPerson()] }));
+  const removeVictim = (idx) =>
+    setForm((f) => ({ ...f, victims: f.victims.filter((_, i) => i !== idx) }));
+
+  const updateAccused = (idx, field, value) =>
+    setForm((f) => ({
+      ...f,
+      accused: f.accused.map((a, i) => (i === idx ? { ...a, [field]: value } : a)),
+    }));
+  const addAccused = () => setForm((f) => ({ ...f, accused: [...f.accused, EmptyPerson()] }));
+  const removeAccused = (idx) =>
+    setForm((f) => ({ ...f, accused: f.accused.filter((_, i) => i !== idx) }));
+
+  const firFormValid =
+    form.crime_subhead_id &&
+    form.police_station_id &&
+    form.complainant.name.trim() &&
+    form.victims.some((v) => v.name.trim());
+
   const submitFir = async () => {
-    if (!form.crime_subhead_id || !form.police_station_id || !officer) return;
+    if (!firFormValid || !officer) return;
     setSubmitting(true);
     try {
       const res = await fetchJSON("add_case", {
@@ -182,6 +229,8 @@ export default function FIRManagement() {
           police_person_id: officer.employee_id,
           latitude: form.latitude ? Number(form.latitude) : 0,
           longitude: form.longitude ? Number(form.longitude) : 0,
+          victims: form.victims.filter((v) => v.name.trim()),
+          accused: form.accused.filter((a) => a.name.trim()),
         }),
       });
       if (res.error) throw new Error(res.error);
@@ -234,20 +283,30 @@ export default function FIRManagement() {
           font-weight: 600; background: rgba(255,255,255,0.06); }
         .fir-empty { text-align: center; padding: 40px; color: var(--muted); font-size: 13px; }
         .fir-error { text-align: center; padding: 16px; color: var(--wine); font-size: 12.5px; }
+        .fir-section-header { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted);
+          text-transform: uppercase; letter-spacing: 0.06em; font-weight: 700; padding-bottom: 6px;
+          border-bottom: 1px solid var(--border); margin-bottom: 8px; }
+        .fir-person-row { display: flex; align-items: center; gap: 8px; }
+        .fir-person-block { margin-bottom: 8px; }
 
         .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.55); display: flex;
-          align-items: center; justify-content: center; z-index: 100; }
+          align-items: center; justify-content: center; z-index: 100; padding: 24px; box-sizing: border-box;
+          overscroll-behavior: contain; }
         .modal { background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
-          padding: 22px; width: 400px; max-width: 90vw; }
-        .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+          width: 400px; max-width: 90vw; max-height: 82vh; display: flex; flex-direction: column;
+          overflow: hidden; }
+        .modal-header { display: flex; justify-content: space-between; align-items: center;
+          padding: 18px 22px; flex-shrink: 0; border-bottom: 1px solid var(--border); }
         .modal-title { font-weight: 700; font-size: 15px; }
+        .modal-body { padding: 16px 22px; overflow-y: auto; flex: 1 1 auto; min-height: 0;
+          overscroll-behavior: contain; }
         .field-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em;
           margin-bottom: 5px; margin-top: 12px; font-weight: 600; }
         .field-input, .field-textarea { width: 100%; background: var(--panel-raised); border: 1px solid var(--border);
           border-radius: 8px; padding: 9px 11px; font-size: 12.5px; color: var(--text); outline: none;
           font-family: inherit; box-sizing: border-box; }
         .field-textarea { resize: vertical; min-height: 60px; }
-        .modal-actions { display: flex; gap: 8px; margin-top: 18px; }
+        .modal-actions { display: flex; gap: 8px; padding: 16px 22px; flex-shrink: 0; border-top: 1px solid var(--border); }
 
         .fir-extract-row { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
         .fir-inline-note { font-size: 10.5px; color: var(--muted); margin-top: 4px; }
@@ -339,11 +398,12 @@ export default function FIRManagement() {
 
       {showForm && (
         <div className="modal-overlay" onClick={closeForm}>
-          <div className="modal" style={{ width: 460 }} onClick={(e) => e.stopPropagation()}>
+          <div className="modal" style={{ width: 420 }} onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
               <div className="modal-title">New FIR</div>
               <X size={16} style={{ cursor: "pointer", color: "var(--muted)" }} onClick={closeForm} />
             </div>
+            <div className="modal-body">
 
             <div className="field-label">Crime Type *</div>
             <select className="field-input" value={form.crime_subhead_id}
@@ -374,6 +434,82 @@ export default function FIRManagement() {
             <div className="field-label">Longitude</div>
             <input className="field-input" value={form.longitude}
               onChange={(e) => setForm({ ...form, longitude: e.target.value })} placeholder="e.g. 77.7500" />
+
+            <div className="fir-section-header" style={{ marginTop: 16 }}>
+              <User size={12} /> Complainant Details
+            </div>
+            <div className="field-label">Name *</div>
+            <input className="field-input" value={form.complainant.name}
+              onChange={(e) => updateComplainant("name", e.target.value)} placeholder="Complainant full name" />
+            <div className="fir-person-row">
+              <div style={{ flex: 1 }}>
+                <div className="field-label">Age</div>
+                <input className="field-input" value={form.complainant.age}
+                  onChange={(e) => updateComplainant("age", e.target.value)} placeholder="Age" />
+              </div>
+              <div style={{ flex: 1 }}>
+                <div className="field-label">Gender</div>
+                <select className="field-input" value={form.complainant.gender}
+                  onChange={(e) => updateComplainant("gender", e.target.value)}>
+                  <option value="">Select…</option>
+                  <option value="M">Male</option>
+                  <option value="F">Female</option>
+                </select>
+              </div>
+            </div>
+            <div className="field-label">Occupation</div>
+            <input className="field-input" value={form.complainant.occupation}
+              onChange={(e) => updateComplainant("occupation", e.target.value)} placeholder="e.g. Farmer, Student…" />
+
+            <div className="fir-section-header" style={{ marginTop: 16 }}>
+              <User size={12} /> Victim(s) *
+            </div>
+            {form.victims.map((v, idx) => (
+              <div key={idx} className="fir-person-block">
+                <div className="fir-person-row">
+                  <input className="field-input" style={{ flex: 2 }} value={v.name}
+                    onChange={(e) => updateVictim(idx, "name", e.target.value)} placeholder="Victim name" />
+                  <input className="field-input" style={{ flex: 1 }} value={v.age}
+                    onChange={(e) => updateVictim(idx, "age", e.target.value)} placeholder="Age" />
+                  <select className="field-input" style={{ flex: 1 }} value={v.gender}
+                    onChange={(e) => updateVictim(idx, "gender", e.target.value)}>
+                    <option value="">Gender</option>
+                    <option value="M">Male</option>
+                    <option value="F">Female</option>
+                  </select>
+                  {form.victims.length > 1 && (
+                    <X size={16} style={{ cursor: "pointer", color: "var(--muted)" }} onClick={() => removeVictim(idx)} />
+                  )}
+                </div>
+              </div>
+            ))}
+            <div className="fir-btn ghost" style={{ fontSize: 11.5, marginTop: 4 }} onClick={addVictim}>
+              <Plus size={12} /> Add another victim
+            </div>
+
+            <div className="fir-section-header" style={{ marginTop: 16 }}>
+              <User size={12} /> Accused (if known)
+            </div>
+            {form.accused.map((a, idx) => (
+              <div key={idx} className="fir-person-block">
+                <div className="fir-person-row">
+                  <input className="field-input" style={{ flex: 2 }} value={a.name}
+                    onChange={(e) => updateAccused(idx, "name", e.target.value)} placeholder="Accused name" />
+                  <input className="field-input" style={{ flex: 1 }} value={a.age}
+                    onChange={(e) => updateAccused(idx, "age", e.target.value)} placeholder="Age" />
+                  <select className="field-input" style={{ flex: 1 }} value={a.gender}
+                    onChange={(e) => updateAccused(idx, "gender", e.target.value)}>
+                    <option value="">Gender</option>
+                    <option value="M">Male</option>
+                    <option value="F">Female</option>
+                  </select>
+                  <X size={16} style={{ cursor: "pointer", color: "var(--muted)" }} onClick={() => removeAccused(idx)} />
+                </div>
+              </div>
+            ))}
+            <div className="fir-btn ghost" style={{ fontSize: 11.5, marginTop: 4 }} onClick={addAccused}>
+              <Plus size={12} /> Add accused
+            </div>
 
             <div className="field-label" style={{ marginTop: 12 }}>Brief Facts</div>
             <textarea className="field-textarea" value={form.brief_facts}
@@ -443,9 +579,11 @@ export default function FIRManagement() {
               </div>
             )}
 
+            </div>
+
             <div className="modal-actions">
               <button className="fir-btn ghost" style={{ flex: 1, justifyContent: "center" }} onClick={closeForm}>Cancel</button>
-              <button className="fir-btn primary" style={{ flex: 1, justifyContent: "center" }} onClick={submitFir} disabled={submitting}>
+              <button className="fir-btn primary" style={{ flex: 1, justifyContent: "center" }} onClick={submitFir} disabled={submitting || !firFormValid}>
                 {submitting ? "Saving…" : "Create FIR"}
               </button>
             </div>
@@ -455,11 +593,12 @@ export default function FIRManagement() {
 
       {detailCaseId && (
         <div className="modal-overlay" onClick={closeCaseDetail}>
-          <div className="modal" style={{ width: 460 }} onClick={(e) => e.stopPropagation()}>
+          <div className="modal" style={{ width: 420 }} onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
               <div className="modal-title">Case Detail — {detailCaseId}</div>
               <X size={16} style={{ cursor: "pointer", color: "var(--muted)" }} onClick={closeCaseDetail} />
             </div>
+            <div className="modal-body">
 
             {detailLoading && <div className="fir-empty" style={{ padding: 20 }}>Loading case detail…</div>}
 
@@ -564,6 +703,7 @@ export default function FIRManagement() {
                 </div>
               </>
             )}
+            </div>
           </div>
         </div>
       )}

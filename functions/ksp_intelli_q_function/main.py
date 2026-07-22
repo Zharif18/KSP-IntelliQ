@@ -3,7 +3,6 @@ import os
 import json
 import time
 import hashlib
-import re
 import datetime
 from flask import Request, make_response, jsonify # type: ignore
 import zcatalyst_sdk #type: ignore
@@ -453,9 +452,17 @@ def _dashboard_stats(app, officer):
     def count(extra_where=""):
         conditions = [c for c in [scope_clause, extra_where] if c]
         where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
-        q = f"SELECT COUNT(CaseMasterID) FROM CaseMaster{where}"
+        # NOTE: ZCQL accepts "AS cnt" syntactically but does NOT rename the
+        # key in the returned row — it comes back keyed by the original
+        # expression (e.g. "COUNT(CaseMasterID)"), not the alias. Grab the
+        # single value out of the row instead of indexing by the alias name,
+        # so this doesn't depend on however ZCQL happens to key it.
+        q = f"SELECT COUNT(CaseMasterID) AS cnt FROM CaseMaster{where}"
         rows = zcql.execute_query(q)
-        return rows[0]["CaseMaster"]["CaseMasterID"] if rows else 0
+        if not rows:
+            return 0
+        row = rows[0]["CaseMaster"]
+        return int(next(iter(row.values())))
 
     return {
         "totalCrimes": count(),
@@ -536,6 +543,19 @@ def add_case(app, request, officer, audit):
 
     required = ["crime_subhead_id", "police_station_id", "police_person_id"]
     missing = [f for f in required if not body.get(f)]
+
+    # A real FIR always names who complained and who the victim(s) are —
+    # those live in ComplainantDetails / Victim, not CaseMaster, but the
+    # form is still incomplete without them. Accused are frequently
+    # unknown at FIR-registration time, so that list stays optional.
+    complainant = body.get("complainant") or {}
+    if not complainant.get("name"):
+        missing.append("complainant.name")
+
+    victims = [v for v in (body.get("victims") or []) if v.get("name")]
+    if not victims:
+        missing.append("victims[].name")
+
     if missing:
         return make_response(jsonify({"error": f"Missing required fields: {', '.join(missing)}"}), 400)
 
@@ -583,7 +603,59 @@ def add_case(app, request, officer, audit):
     inserted = table.insert_row(row_data)
     audit["resource_id"] = new_id
 
-    return make_response(jsonify({"message": "Case created", "case": inserted.get("row")}), 201)
+    # Shared millisecond timestamp as an ID prefix, then an index suffix
+    # per row — avoids collisions between the several rows this one
+    # request inserts (a plain int(time.time()) is only second-granular
+    # and would collide across complainant/victim/accused rows).
+    ts = int(time.time() * 1000)
+
+    complainant_row = {
+        "ComplainantID": f"COMP{ts}",
+        "CaseMasterID": new_id,
+        "ComplainantName": complainant.get("name"),
+        "AgeYear": complainant.get("age") or None,
+        "Occupation": complainant.get("occupation", ""),
+        "GenderID": complainant.get("gender", ""),
+    }
+    inserted_complainant = app.datastore().table("ComplainantDetails").insert_row(complainant_row)
+
+    inserted_victims = []
+    for i, v in enumerate(victims):
+        victim_row = {
+            "VictimMasterID": f"VIC{ts}{i}",
+            "CaseMasterID": new_id,
+            "VictimName": v.get("name"),
+            "AgeYear": v.get("age") or None,
+            "GenderID": v.get("gender", ""),
+            "VictimPolice": 0,
+        }
+        inserted_victims.append(app.datastore().table("Victim").insert_row(victim_row).get("row"))
+
+    accused_in = [a for a in (body.get("accused") or []) if a.get("name")]
+    inserted_accused = []
+    for i, a in enumerate(accused_in):
+        accused_row = {
+            "AccusedMasterID": f"ACC{ts}{i}",
+            "CaseMasterID": new_id,
+            "AccusedName": a.get("name"),
+            "AgeYear": a.get("age") or None,
+            "GenderID": a.get("gender", ""),
+            "PersonID": f"A{i + 1}",
+            # Each accused entered through this form is treated as a new
+            # identity (no cross-case person matching here) — PersonKey
+            # just needs to be unique to this row, same shape as the
+            # synthetic-data generator's PER ids.
+            "PersonKey": f"PER{ts}{i}",
+        }
+        inserted_accused.append(app.datastore().table("Accused").insert_row(accused_row).get("row"))
+
+    return make_response(jsonify({
+        "message": "Case created",
+        "case": inserted.get("row"),
+        "complainant": inserted_complainant.get("row"),
+        "victims": inserted_victims,
+        "accused": inserted_accused,
+    }), 201)
 
 
 # ---------------------------------------------------------------------
@@ -2066,207 +2138,82 @@ def _detect_crime_subhead(message, crime_subheads):
 # ---------------------------------------------------------------------
 ZIA_PERSON_TAGS = {"Person", "PERSON"}
 
-# ---------------------------------------------------------------------
-# Weapon / MO dictionary match
-#
-# Zia's keyword extractor is general-purpose — a weapon mentioned in
-# the narrative just comes back as one more keyphrase in the same
-# bucket as everything else. For a field officers scan for at a
-# glance, that's not good enough, so this is a small curated,
-# bilingual (English + Kannada) surface-form dictionary matched
-# against the raw narrative with a plain regex pass alongside (not
-# instead of) Zia. Deterministic, offline, and cheap to extend —
-# no model call, no hallucination risk, just substring matching on a
-# hand-built list. Each canonical label maps to the surface forms
-# (script variants, common transliterations, related tools) that
-# should count as a hit for it.
-# ---------------------------------------------------------------------
-WEAPON_MO_DICTIONARY = {
-    "Knife": ["knife", "knives", "blade", "dagger", "ಚಾಕು", "ಕತ್ತಿ"],
-    "Firearm": ["gun", "pistol", "revolver", "rifle", "firearm", "country-made pistol", "ಬಂದೂಕ", "ಪಿಸ್ತೂಲ್"],
-    "Sword": ["sword", "machete", "sickle", "ಕತ್ತಿ ಆಯುಧ", "ಕುಡುಗೋಲು"],
-    "Axe": ["axe", "hatchet", "ಕೊಡಲಿ"],
-    "Chain": ["chain snatching", "gold chain", "neck chain", "ಸರ ಕಳ್ಳತನ", "ಚಿನ್ನದ ಸರ"],
-    "Blunt Object": ["stick", "iron rod", "rod", "club", "hammer", "wooden log", "ಕಲ್ಲು", "ಕೋಲು", "ಕಬ್ಬಿಣದ ರಾಡ್"],
-    "Vehicle": ["motorcycle", "two-wheeler", "car", "auto rickshaw", "lorry", "van", "ವಾಹನ", "ಬೈಕ್", "ಕಾರು"],
-    "Acid": ["acid attack", "acid", "ಆಮ್ಲ ದಾಳಿ", "ಆಮ್ಲ"],
-    "Explosive": ["bomb", "explosive", "grenade", "country bomb", "ಬಾಂಬ್", "ಸ್ಫೋಟಕ"],
-    "Poison": ["poisoning", "poison", "ವಿಷ"],
-    "Rope": ["rope", "strangulation", "ಹಗ್ಗ"],
-    "Firecracker": ["firecracker", "fire cracker", "ಪಟಾಕಿ"],
-}
-
-
-def _detect_weapons(text):
-    """Regex word-boundary match of the narrative against
-    WEAPON_MO_DICTIONARY. Returns (labels, matched_terms) — labels is
-    the ordered, de-duplicated list of canonical Weapon/MO labels to
-    surface as their own field; matched_terms is the set of raw
-    surface forms that hit, used to keep the same phrase from also
-    showing up as a generic Zia keyword chip right next to it."""
-    labels = []
-    matched_terms = set()
-    for label, terms in WEAPON_MO_DICTIONARY.items():
-        for term in terms:
-            if re.search(r"\b" + re.escape(term.lower()) + r"\b", text.lower()):
-                if label not in labels:
-                    labels.append(label)
-                matched_terms.add(term.lower())
-                break
-    return labels, matched_terms
-
 
 def _extract_fir_entities(app, officer, text):
     lookups = _lookups(app)
-    result = {
-        "persons": [],
-        "locations": [],
-        "keywords": [],
-        "keyphrases": [],
-        "weapons": [],
-        "suggestedCrimeSubheadId": "",
-        "suggestedCrimeSubheadName": "",
-        "suggestedDistrictId": "",
-        "suggestedDistrictName": "",
-        "ziaAvailable": True,
-    }
+    zia_signals = _zia_understand(app, text)
 
-    # Dictionary match runs regardless of Zia's availability — it's
-    # pure regex over the raw text, so a "Weapon: Knife" style field
-    # still shows up even if Zia Services is down.
-    weapon_labels, weapon_terms = _detect_weapons(text)
-    result["weapons"] = weapon_labels
+    # Use existing helper matchers against extracted text/entities
+    district_id, district_name = _detect_district(text, lookups["districts"], zia_signals.get("location_entities"))
+    subhead_id, subhead_name = _detect_crime_subhead(text, lookups["crime_subheads"])
+
+    persons = []
+    locations = zia_signals.get("location_entities", [])
 
     try:
         zia = app.zia()
-        docs = [text[:1500]]  # Zia Text Analytics input cap
-
-        ner_data = zia.get_NER_prediction(docs)
-        kw_data = zia.get_keyword_extraction(docs)
-
+        ner_data = zia.get_NER_prediction([text[:1500]])
         entities = (((ner_data or [{}])[0] or {}).get("ner", {}) or {}).get("general_entities") or []
-        result["persons"] = sorted({e["token"] for e in entities if e.get("ner_tag") in ZIA_PERSON_TAGS})
-        result["locations"] = sorted({e["token"] for e in entities if e.get("ner_tag") in ZIA_LOCATION_TAGS})
-
-        kw = ((kw_data or [{}])[0] or {}).get("keyword_extractor", {}) or {}
-        # Anything that already landed a dedicated Weapon/MO field
-        # shouldn't also show up as an undifferentiated generic chip.
-        result["keywords"] = [k for k in (kw.get("keywords") or []) if k.lower() not in weapon_terms][:8]
-        result["keyphrases"] = [k for k in (kw.get("keyphrases") or []) if k.lower() not in weapon_terms][:5]
+        for e in entities:
+            tag = e.get("ner_tag")
+            token = e.get("token")
+            if tag in ZIA_PERSON_TAGS and token not in persons:
+                persons.append(token)
+            elif tag in ZIA_LOCATION_TAGS and token not in locations:
+                locations.append(token)
     except Exception as e:
-        logging.getLogger().warning(f"Zia text mining unavailable, continuing without it: {e}")
-        result["ziaAvailable"] = False
+        logging.getLogger().warning(f"Zia NER extraction failed: {e}")
 
-    subhead_id, subhead_name = _detect_crime_subhead(text, lookups["crime_subheads"])
-    district_id, district_name = _detect_district(text, lookups["districts"], result["locations"])
-    # A district/station-scoped officer's own home district still wins
-    # if nothing else was detected in the narrative — keeps the
-    # suggestion useful without ever suggesting a district outside the
-    # officer's own operational area for scoped roles.
-    if not district_id and officer["data_scope"] in ("OWN_CASES", "STATION", "DISTRICT") and officer["district_id"]:
-        district_id = officer["district_id"]
-        district_name = next((d["DistrictName"] for d in lookups["districts"] if d["DistrictID"] == district_id), "")
-
-    result["suggestedCrimeSubheadId"] = subhead_id
-    result["suggestedCrimeSubheadName"] = subhead_name
-    result["suggestedDistrictId"] = district_id
-    result["suggestedDistrictName"] = district_name
-    return result
+    return {
+        "persons": persons,
+        "locations": locations,
+        "keywords": zia_signals.get("keywords", []),
+        "keyphrases": zia_signals.get("keyphrases", []),
+        "suggestedCrimeSubheadId": subhead_id,
+        "suggestedCrimeSubheadName": subhead_name,
+        "suggestedDistrictId": district_id,
+        "suggestedDistrictName": district_name,
+    }
 
 
 def extract_fir_entities(app, request, officer, audit):
-    audit["resource_type"] = "fir_entity_extraction"
+    audit["resource_type"] = "extract_fir_entities"
     body = request.get_json(force=True) or {}
     text = (body.get("text") or "").strip()
     if not text:
         return make_response(jsonify({"error": "text is required"}), 400)
-    result = _extract_fir_entities(app, officer, text)
-    audit["record_count"] = len(result["persons"]) + len(result["locations"]) + len(result["weapons"])
-    return make_response(jsonify(result), 200)
 
-
-def _build_assistant_context(app, officer, message, zia_signals=None):
-    zia_signals = zia_signals or {}
-    msg_low = message.lower()
-    lookups = _lookups(app)
-    district_id, district_name = _detect_district(
-        message, lookups["districts"], zia_signals.get("location_entities")
-    )
-    subhead_id, subhead_name = _detect_crime_subhead(message, lookups["crime_subheads"])
-
-    # RBAC: a station/district-scoped officer can't use the chat to ask
-    # about a district that isn't theirs.
-    if officer["data_scope"] in ("OWN_CASES", "STATION", "DISTRICT") and district_id and district_id != officer["district_id"]:
-        district_id, district_name = "", ""
-
-    context = {"dashboardStats": _dashboard_stats(app, officer)}
-    suggested_tab = None
-
-    network_kw = ["network", "repeat offender", "connection", "linked", "gang", "associat", "co-accused", "coaccused", "ring"]
-    map_kw = ["hotspot", "map", "cluster", "where"]
-
-    if any(k in msg_low for k in network_kw) or district_id:
-        graph = _network_graph(app, officer, district_id=district_id, min_cases=2, limit_persons=8)
-        top_persons = sorted(
-            [n for n in graph["nodes"] if n["type"] == "person"],
-            key=lambda n: -n["caseCount"],
-        )[:5]
-        context["topRepeatOffenders"] = [
-            {"name": p["label"], "caseCount": p["caseCount"], "stations": p["stations"], "crimeTypes": p["crimeTypes"]}
-            for p in top_persons
-        ]
-        suggested_tab = "Network"
-
-    if any(k in msg_low for k in map_kw):
-        suggested_tab = suggested_tab or "Crime Map"
-
-    if district_id or subhead_id or "case" in msg_low or "fir" in msg_low or "status" in msg_low:
-        cases = _search_cases(app, officer, district_id=district_id, crime_subhead_id=subhead_id, limit=5)
-        context["recentMatchingCases"] = [
-            {
-                "caseNo": c.get("CaseNo"),
-                "date": c.get("CrimeRegisteredDate"),
-                "status": c.get("CaseStatusID"),
-                "station": c.get("PoliceStationID"),
-            }
-            for c in cases
-        ]
-        if district_id:
-            context["filteredOnDistrict"] = district_name
-        if subhead_id:
-            context["filteredOnCrimeType"] = subhead_name
-        suggested_tab = suggested_tab or "Cases"
-
-    return context, suggested_tab
+    res = _extract_fir_entities(app, officer, text)
+    return make_response(jsonify(res), 200)
 
 
 def ai_assistant(app, request, officer, audit):
-    audit["resource_type"] = "ai_assistant_query"
+    audit["resource_type"] = "ai_assistant"
     body = request.get_json(force=True) or {}
     message = (body.get("message") or "").strip()
-    # `history` is accepted for API-compatibility with the previous
-    # (Gemini-based) client payload, but Zia's Text Analytics APIs are
-    # single-turn — the reply is composed fresh from live data on every
-    # call, so history isn't threaded into a model prompt here.
-    _history = body.get("history") or []
-
     if not message:
         return make_response(jsonify({"error": "message is required"}), 400)
 
+    lookups = _lookups(app)
     zia_signals = _zia_understand(app, message)
 
-    try:
-        context, suggested_tab = _build_assistant_context(app, officer, message, zia_signals)
-    except Exception as e:
-        context, suggested_tab = {"error": f"context lookup failed: {e}"}, None
+    district_id, district_name = _detect_district(message, lookups["districts"], zia_signals.get("location_entities"))
+    subhead_id, subhead_name = _detect_crime_subhead(message, lookups["crime_subheads"])
 
+    context = {}
+    if district_id or subhead_id:
+        cases = _search_cases(app, officer, district_id=district_id, crime_subhead_id=subhead_id, limit=5)
+        context["recentMatchingCases"] = [
+            {"caseNo": c.get("CaseNo"), "date": c.get("CrimeRegisteredDate")} for c in cases
+        ]
+        if district_name:
+            context["filteredOnDistrict"] = district_name
+        if subhead_name:
+            context["filteredOnCrimeType"] = subhead_name
+    else:
+        context["dashboardStats"] = _dashboard_stats(app, officer)
+
+    suggested_tab = "search" if ("recentMatchingCases" in context) else "dashboard"
     reply, action = _compose_zia_reply(context, suggested_tab, zia_signals)
 
-    return make_response(jsonify({
-        "reply": reply,
-        "action": action,
-        "zia": {  # surfaced for the UI / demo; safe to ignore on the client
-            "sentiment": zia_signals.get("sentiment"),
-            "keywords": zia_signals.get("keywords"),
-        },
-    }), 200)
+    return make_response(jsonify({"reply": reply, "action": action, "context": context}), 200)
