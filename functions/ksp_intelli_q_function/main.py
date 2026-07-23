@@ -8,6 +8,7 @@ import hashlib
 import datetime
 from flask import Request, make_response, jsonify # type: ignore
 import zcatalyst_sdk #type: ignore
+import ncrb_export
 
 
 # =======================================================================
@@ -55,8 +56,10 @@ import zcatalyst_sdk #type: ignore
 #   - can_view_pii is True for all seven: these are all operational
 #     police ranks, not a read-only analyst tier, so nobody's identity
 #     view is degraded to a masked pseudonym on account of rank alone.
-#     Victim-identity masking in sensitive-crime matters (Sec 74 BNSS /
-#     POCSO) and juvenile masking (Sec 74 JJ Act) are handled entirely
+#     Victim-identity masking in sensitive-crime matters (Sec 72 BNS —
+#     the Bharatiya Nyaya Sanhita, 2023 successor to IPC Sec 228A; NOT
+#     BNSS Sec 74, a different, unrelated provision — see the note at
+#     _redact_victim below) and juvenile masking (Sec 74 JJ Act) are handled entirely
 #     separately in _redact_victim/_redact_accused below and apply to
 #     EVERY rank equally — that protection is about the case, not the
 #     viewer's seniority, and it is never weakened here.
@@ -85,6 +88,61 @@ DEFAULT_ROLE = {
     "can_view_pii": True,
     "can_export_ncrb": False,
     "level": 0,
+    "is_scrb_analyst": False,
+}
+
+# =======================================================================
+# SCRB Analyst — an EIGHTH access tier, distinct from the seven police
+# ranks above in one important way: it is not a rank at all. A State
+# Crime Records Bureau analyst is a statistics/compliance role sitting
+# above every district, whose whole job is consolidating what each
+# district has already filed into the statewide NCRB return — not
+# investigating cases. That difference is encoded directly, not just
+# implied by scope:
+#
+#   Role                Data scope   Level  PII    NCRB export
+#   ------------------  -----------  -----  -----  -----------
+#   SCRB Analyst         STATE         6    No     Yes
+#
+# Unlike every RANK_ACCESS row, can_view_pii is False here on purpose:
+# an SCRB analyst is exactly the "read-only/analyst tier" the comments
+# above always anticipated — someone whose statutory function is
+# counting and classifying cases, never learning who is in them. This
+# single flag is what already makes _redact_victim/_redact_accused mask
+# every name for this role (juveniles and sensitive-crime victims were
+# always masked for a STATE-scope non-PII viewer; this makes it true
+# for EVERY person, not only the ones already covered by those two
+# specific rules) — no separate redaction path needed.
+#
+# level=6, not 7: deliberately kept BELOW OVERSIGHT_MIN_LEVEL (7), so
+# an SCRB analyst never gets the Audit Log or Bias Audit tabs — those
+# are internal police-oversight views about officer conduct, not
+# statistical-return material, and stay Superintendent-of-Police-only.
+# level is irrelevant to FIR_AMEND_MIN_LEVEL in practice anyway, since
+# is_scrb_analyst below denies case-mutation routes outright regardless
+# of level (see add_case / update_case_status).
+#
+# This is NOT a RANK_ACCESS row (SCRB analysts have no RankID/Employee
+# rank — they're not police officers) — it's seeded directly into the
+# Role table and picked up entirely through the RoleID path in
+# _get_officer_context, same as any other Role row. To provision one:
+#   1. Add an IsSCRBAnalyst column (Boolean/Number, default 0) to the
+#      Role table, alongside the existing DataScope/CanViewPII/
+#      CanExportNCRB/Level columns.
+#   2. Insert one Role row: RoleName="SCRB Analyst", DataScope="STATE",
+#      CanViewPII=0, CanExportNCRB=1, Level=6, IsSCRBAnalyst=1.
+#   3. Set the SCRB user's Employee.RoleID to that row. (They still
+#      need an Employee row + a UnitID/RankID for the login to resolve
+#      at all — RankID can point at any placeholder Rank row, since
+#      RoleID always wins over the RankID fallback once it resolves.)
+# =======================================================================
+SCRB_ROLE_SEED = {
+    "role_name": "SCRB Analyst",
+    "data_scope": "STATE",
+    "level": 6,
+    "can_view_pii": False,
+    "can_export_ncrb": True,
+    "is_scrb_analyst": True,
 }
 
 # Ordered least -> most privileged, used by the audit-log/bias-audit
@@ -154,6 +212,8 @@ def handler(request: Request):
             ("/get_officers", "GET"): get_officers,
             ("/get_reports", "GET"): get_reports,
             ("/get_ncrb_report", "GET"): get_ncrb_report,
+            ("/export_ncrb_return", "GET"): export_ncrb_return,
+            ("/export_ncrb_return_bundle", "GET"): export_ncrb_return_bundle,
             ("/ai_assistant", "POST"): ai_assistant,
             ("/get_audit_log", "GET"): get_audit_log,
             ("/get_hotspots", "GET"): get_hotspots,
@@ -323,6 +383,11 @@ def _get_officer_context(app):
                     "can_view_pii": bool(int(r.get("CanViewPII", 1))),
                     "can_export_ncrb": bool(int(r.get("CanExportNCRB", 0))),
                     "level": int(r.get("Level", 0)),
+                    # Defaults to False for every existing Role row that
+                    # predates this column — only a row explicitly
+                    # seeded per SCRB_ROLE_SEED above sets it, so this
+                    # never silently upgrades an existing officer.
+                    "is_scrb_analyst": bool(int(r.get("IsSCRBAnalyst", 0))),
                 })
                 resolved = True
         except Exception:
@@ -371,6 +436,7 @@ def get_current_officer(app, request, officer, audit):
         "dataScope": officer["data_scope"],
         "canViewPII": officer["can_view_pii"],
         "canExportNCRB": officer["can_export_ncrb"],
+        "isSCRBAnalyst": officer["is_scrb_analyst"],
         "provisioned": True,
     }
     return make_response(jsonify({"officer": officer_out}), 200)
@@ -440,11 +506,17 @@ def _mask_person_label(person_key, reason):
 #
 # _redact_victim: same juvenile/PII rules, PLUS a victim-privacy rule
 #   that doesn't apply to accused: in a sensitive-crime case (proxy for
-#   POCSO / sexual-offence matters, BNSS Sec 74 victim-identity
-#   protection), the victim's name is masked for anyone who is not the
-#   investigating officer or that officer's own station — i.e. an SP
-#   overseeing a district, or an SCRB analyst, never gets the victim's
-#   name for these cases, even though they can see the rest of the case.
+#   POCSO / sexual-offence matters, Sec 72 BNS victim-identity
+#   protection — the Bharatiya Nyaya Sanhita, 2023 successor to IPC
+#   Sec 228A; note this is a BNS section, NOT "BNSS Sec 74", which is a
+#   different, unrelated procedural provision — easy citation to get
+#   wrong since JJ Act Sec 74 is *also* an identity-protection section,
+#   just for a different statute), the victim's name is masked for
+#   anyone who is not the investigating officer or that officer's own
+#   station — i.e. an SP overseeing a district, or an SCRB analyst
+#   (STATE scope, can_view_pii=False by design — see SCRB_ROLE_SEED
+#   below), never gets the victim's name for these cases, even though
+#   they can see the rest of the case.
 #   `viewer_has_case_access` should be True only when the case is the
 #   caller's own case or their own station's case (OWN_CASES/STATION
 #   scope, already matched) — never for DISTRICT/STATE scope.
@@ -640,6 +712,12 @@ def add_case(app, request, officer, audit):
     if not officer["provisioned"]:
         return make_response(jsonify({"error": "forbidden", "message": "This login isn't linked to an officer profile yet."}), 403)
 
+    # SCRB analysts (STATE scope, no case ownership) never register FIRs —
+    # that's an investigating-officer function under Sec 173 BNSS, and an
+    # SCRB analyst isn't one. See SCRB_ROLE_SEED above.
+    if officer["is_scrb_analyst"]:
+        return make_response(jsonify({"error": "forbidden", "message": "SCRB analysts have statewide read-only access for statistical reporting and cannot register FIRs."}), 403)
+
     body = request.get_json(force=True)
 
     required = ["crime_subhead_id", "police_station_id", "police_person_id"]
@@ -767,6 +845,15 @@ def add_case(app, request, officer, audit):
 # ---------------------------------------------------------------------
 def update_case_status(app, request, officer, audit):
     audit["resource_type"] = "case_status_update"
+
+    # SCRB analysts get in_scope=True below (STATE scope sees every
+    # case for reporting purposes), but that's a read-only allowance,
+    # not license to change a case's status — block it explicitly
+    # rather than relying on is_direct_holder, which this route doesn't
+    # otherwise check.
+    if officer["is_scrb_analyst"]:
+        return make_response(jsonify({"error": "forbidden", "message": "SCRB analysts have statewide read-only access for statistical reporting and cannot update case status."}), 403)
+
     body = request.get_json(force=True)
 
     case_id = body.get("case_master_id")
@@ -1927,6 +2014,192 @@ def get_ncrb_report(app, request, officer, audit):
         "totalCasesRegistered": len(cases),
         "rows": rows,
     }), 200)
+
+
+# ---------------------------------------------------------------------
+# Shared by export_ncrb_return / export_ncrb_return_bundle.
+#
+# Fetches the SAME scoped/period-filtered CaseMaster rows get_ncrb_report
+# already uses, plus Victim and Accused rows for those cases — but ONLY
+# AgeYear/GenderID/CaseMasterID from each. VictimName, AccusedName,
+# PersonKey and PersonID are never SELECTed here. That's not a redaction
+# step applied after the fact; those columns simply never enter this
+# function's memory, so there's nothing for a bug downstream in
+# ncrb_export.py to accidentally leak. See ncrb_export.py's module
+# docstring for the full legal rationale.
+#
+# Also resolves district_of_case (CaseMasterID -> DistrictName) once,
+# since every one of the four standard tables groups by district.
+# ---------------------------------------------------------------------
+def _ncrb_export_source_data(app, officer, period_from, period_to):
+    scope_clause = _case_scope_clause(app, officer)
+    conditions = [scope_clause] if scope_clause else []
+    if period_from:
+        conditions.append(f"CrimeRegisteredDate >= '{period_from}'")
+    if period_to:
+        conditions.append(f"CrimeRegisteredDate <= '{period_to}'")
+    where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+
+    cases = zcql_rows_paginated(app, "CaseMaster",
+        "SELECT CaseMasterID, CrimeRegisteredDate, PoliceStationID, GravityOffenceID, "
+        f"CrimeMajorHeadID, CrimeMinorHeadID, CaseStatusID FROM CaseMaster{where}")
+    case_ids = {c["CaseMasterID"] for c in cases}
+
+    lookups = _lookups(app)
+    head_name = {h["CrimeHeadID"]: h["CrimeGroupName"] for h in lookups["crime_heads"]}
+    subhead_name = {s["CrimeSubHeadID"]: s["CrimeHeadName"] for s in lookups["crime_subheads"]}
+    unit_district = {u["UnitID"]: u["DistrictID"] for u in lookups["units"]}
+    district_name = {d["DistrictID"]: d["DistrictName"] for d in lookups["districts"]}
+    status_name = {s["CaseStatusID"]: s["CaseStatusName"] for s in lookups["statuses"]}
+    gravity_rows = zcql_rows(app, "GravityOffence", "SELECT GravityOffenceID, LookupValue FROM GravityOffence")
+    gravity_name = {g["GravityOffenceID"]: g["LookupValue"] for g in gravity_rows}
+    district_of_case = {c["CaseMasterID"]: district_name.get(unit_district.get(c.get("PoliceStationID")), "Unassigned") for c in cases}
+
+    # Deliberately NOT selecting VictimName/AccusedName/PersonKey/PersonID
+    # here — see the docstring above.
+    from collections import defaultdict
+    victim_rows = zcql_rows_paginated(app, "Victim", "SELECT VictimMasterID, CaseMasterID, AgeYear, GenderID FROM Victim")
+    victims_by_case = defaultdict(list)
+    for v in victim_rows:
+        if v["CaseMasterID"] in case_ids:
+            victims_by_case[v["CaseMasterID"]].append(v)
+
+    accused_rows = zcql_rows_paginated(app, "Accused", "SELECT AccusedMasterID, CaseMasterID, AgeYear, GenderID FROM Accused")
+    accused_by_case = defaultdict(list)
+    for a in accused_rows:
+        if a["CaseMasterID"] in case_ids:
+            accused_by_case[a["CaseMasterID"]].append(a)
+
+    return {
+        "cases": cases, "district_of_case": district_of_case,
+        "head_name": head_name, "subhead_name": subhead_name,
+        "gravity_name": gravity_name, "status_name": status_name,
+        "victims_by_case": victims_by_case, "accused_by_case": accused_by_case,
+    }
+
+
+def _build_one_ncrb_table(table_key, src):
+    if table_key == "crime_head_district":
+        return ncrb_export.build_crime_head_district(
+            src["cases"], src["district_of_case"], src["head_name"], src["subhead_name"],
+            src["gravity_name"], src["status_name"])
+    if table_key == "women":
+        return ncrb_export.build_women_statement(
+            src["cases"], src["victims_by_case"], src["district_of_case"], src["subhead_name"], src["status_name"])
+    if table_key == "children":
+        return ncrb_export.build_children_statement(
+            src["cases"], src["victims_by_case"], src["district_of_case"], src["head_name"],
+            src["subhead_name"], src["status_name"])
+    if table_key == "persons_apprehended":
+        return ncrb_export.build_persons_apprehended(
+            src["cases"], src["accused_by_case"], src["district_of_case"], src["head_name"], src["gravity_name"])
+    raise ValueError(f"Unknown NCRB table '{table_key}'")
+
+
+def _scope_label(officer):
+    if officer["is_scrb_analyst"]:
+        return "Statewide (SCRB consolidated)"
+    return {
+        "OWN_CASES": "Own cases",
+        "STATION": "Station",
+        "DISTRICT": "District",
+        "STATE": "Statewide",
+    }.get(officer["data_scope"], officer["data_scope"])
+
+
+# ---------------------------------------------------------------------
+# GET /export_ncrb_return?table=crime_head_district|women|children|persons_apprehended
+#                         &from=YYYY-MM-DD&to=YYYY-MM-DD&format=csv|json
+#
+# One standard NCRB-style statement, scoped exactly like get_ncrb_report
+# (same officer["can_export_ncrb"] gate, same _case_scope_clause), but
+# shaped like the actual published statements — see ncrb_export.py for
+# what each of the four tables is and why it's built the way it is.
+#
+# An SCRB analyst (STATE scope) gets the statewide consolidated version
+# of these same four tables through this exact route — no separate
+# "SCRB view" pulling different data, so there is nothing to re-key
+# between what a district already has and what SCRB exports.
+# ---------------------------------------------------------------------
+def export_ncrb_return(app, request, officer, audit):
+    audit["resource_type"] = "ncrb_standard_export"
+
+    if not officer["can_export_ncrb"]:
+        return make_response(jsonify({
+            "error": "forbidden",
+            "message": "NCRB export requires Inspector rank or above, or SCRB Analyst access.",
+        }), 403)
+
+    table_key = (request.args.get("table") or "").strip()
+    if table_key not in ncrb_export.TABLES:
+        return make_response(jsonify({
+            "error": "bad_request",
+            "message": f"table must be one of: {', '.join(ncrb_export.TABLES.keys())}",
+        }), 400)
+
+    period_from = (request.args.get("from") or "").strip()
+    period_to = (request.args.get("to") or "").strip()
+    out_format = (request.args.get("format") or "json").strip().lower()
+
+    src = _ncrb_export_source_data(app, officer, period_from, period_to)
+    rows = _build_one_ncrb_table(table_key, src)
+    audit["record_count"] = len(rows)
+    audit["resource_id"] = f"{table_key}:{period_from or 'ALL'}:{period_to or 'ALL'}"
+
+    scope_label = _scope_label(officer)
+    officer_label = f"EmployeeID {officer['employee_id']}" if officer["employee_id"] else "SCRB Analyst"
+
+    if out_format == "csv":
+        csv_text = ncrb_export.table_to_csv(table_key, rows, period_from, period_to, officer_label, scope_label)
+        resp = make_response(csv_text, 200)
+        resp.headers["Content-Type"] = "text/csv"
+        fname = f"ncrb_{table_key}_{period_from or 'all'}_{period_to or 'all'}.csv"
+        resp.headers["Content-Disposition"] = f"attachment; filename=\"{fname}\""
+        return resp
+
+    return make_response(jsonify({
+        "table": table_key,
+        "title": ncrb_export.TABLES[table_key]["title"],
+        "period": {"from": period_from or None, "to": period_to or None},
+        "scope": scope_label,
+        "rows": rows,
+    }), 200)
+
+
+# ---------------------------------------------------------------------
+# GET /export_ncrb_return_bundle?from=YYYY-MM-DD&to=YYYY-MM-DD
+#
+# All four standard statements, zipped, in one download — this is the
+# "SCRB doesn't manually re-key data upward" feature end to end: an
+# SCRB analyst picks a period and gets every standard statement already
+# scoped statewide, already in the standard shape, in one click.
+# ---------------------------------------------------------------------
+def export_ncrb_return_bundle(app, request, officer, audit):
+    audit["resource_type"] = "ncrb_standard_export_bundle"
+
+    if not officer["can_export_ncrb"]:
+        return make_response(jsonify({
+            "error": "forbidden",
+            "message": "NCRB export requires Inspector rank or above, or SCRB Analyst access.",
+        }), 403)
+
+    period_from = (request.args.get("from") or "").strip()
+    period_to = (request.args.get("to") or "").strip()
+
+    src = _ncrb_export_source_data(app, officer, period_from, period_to)
+    built = {key: _build_one_ncrb_table(key, src) for key in ncrb_export.TABLES}
+    audit["record_count"] = sum(len(v) for v in built.values())
+    audit["resource_id"] = f"bundle:{period_from or 'ALL'}:{period_to or 'ALL'}"
+
+    scope_label = _scope_label(officer)
+    officer_label = f"EmployeeID {officer['employee_id']}" if officer["employee_id"] else "SCRB Analyst"
+    zip_bytes = ncrb_export.bundle_to_zip_bytes(built, period_from, period_to, officer_label, scope_label)
+
+    resp = make_response(zip_bytes, 200)
+    resp.headers["Content-Type"] = "application/zip"
+    fname = f"ncrb_return_bundle_{period_from or 'all'}_{period_to or 'all'}.zip"
+    resp.headers["Content-Disposition"] = f"attachment; filename=\"{fname}\""
+    return resp
 
 
 # ---------------------------------------------------------------------

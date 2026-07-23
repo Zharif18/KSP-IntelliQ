@@ -52,6 +52,57 @@ async function downloadNCRBReport(from, to, setExportError, setExporting) {
   }
 }
 
+const NCRB_STANDARD_TABLES = [
+  { key: "crime_head_district", label: "Table A — Crime Head x District" },
+  { key: "women", label: "Table B — Crime Against Women" },
+  { key: "children", label: "Table C — Crime Against Children" },
+  { key: "persons_apprehended", label: "Table D — Persons Apprehended" },
+];
+
+async function downloadBlob(endpoint, params, filename, setExportError, setExporting) {
+  setExporting(true);
+  setExportError(null);
+  try {
+    const qs = new URLSearchParams(params);
+    const res = await fetch(`/server/ksp_intelli_q_function/${endpoint}?${qs}`, { credentials: "include" });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.message || `Export failed (${res.status})`);
+    }
+    const blob = await res.blob();
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    window.URL.revokeObjectURL(url);
+  } catch (err) {
+    setExportError(err.message);
+  } finally {
+    setExporting(false);
+  }
+}
+
+function downloadStandardTable(table, from, to, setExportError, setExporting) {
+  return downloadBlob(
+    "export_ncrb_return",
+    { table, format: "csv", ...(from ? { from } : {}), ...(to ? { to } : {}) },
+    `ncrb_${table}_${from || "all"}_${to || "all"}.csv`,
+    setExportError, setExporting
+  );
+}
+
+function downloadStandardBundle(from, to, setExportError, setExporting) {
+  return downloadBlob(
+    "export_ncrb_return_bundle",
+    { ...(from ? { from } : {}), ...(to ? { to } : {}) },
+    `ncrb_return_bundle_${from || "all"}_${to || "all"}.zip`,
+    setExportError, setExporting
+  );
+}
+
 function StatCard({ label, value, tone }) {
   return (
     <div className="rpt-stat">
@@ -91,8 +142,10 @@ export default function Reports({ officer }) {
   const [toDate, setToDate] = useState("");
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState(null);
+  const [standardTable, setStandardTable] = useState(NCRB_STANDARD_TABLES[0].key);
 
   const canExportNCRB = !!officer?.canExportNCRB;
+  const isSCRBAnalyst = !!officer?.isSCRBAnalyst;
 
   const load = () => {
     setLoading(true);
@@ -190,6 +243,54 @@ export default function Reports({ officer }) {
           </div>
         )}
       </div>
+
+      {canExportNCRB && (
+        <div className="rpt-card">
+          <div className="rpt-toolbar" style={{ marginBottom: 4 }}>
+            <div style={{ fontWeight: 700, fontSize: 14 }}>
+              NCRB Standard Return {isSCRBAnalyst && (
+                <span style={{ fontWeight: 500, fontSize: 11.5, color: "var(--muted)", marginLeft: 6 }}>
+                  · Statewide, consolidated — SCRB
+                </span>
+              )}
+            </div>
+          </div>
+          <div style={{ fontSize: 12, color: "var(--muted)", lineHeight: 1.5, marginBottom: 4 }}>
+            Auto-generated in the standard NCRB crime-return shapes (district x crime-head
+            incidence, Crime Against Women, Crime Against Children, Persons Apprehended) —
+            aggregate counts only, so nothing here needs re-keying into a separate return.
+            Victim/juvenile figures never include a name, consistent with Sec 72 BNS and
+            JJ Act 2015 Sec 74.
+          </div>
+          <div className="ncrb-row" style={{ borderTop: "none", marginTop: 4, paddingTop: 4 }}>
+            <select
+              className="ncrb-date"
+              value={standardTable}
+              onChange={(e) => setStandardTable(e.target.value)}
+            >
+              {NCRB_STANDARD_TABLES.map((t) => (
+                <option key={t.key} value={t.key}>{t.label}</option>
+              ))}
+            </select>
+            <button
+              className="rpt-btn"
+              disabled={exporting}
+              onClick={() => downloadStandardTable(standardTable, fromDate, toDate, setExportError, setExporting)}
+            >
+              <Download size={13} /> {exporting ? "Exporting…" : "Download table CSV"}
+            </button>
+            <button
+              className="ncrb-btn"
+              disabled={exporting}
+              onClick={() => downloadStandardBundle(fromDate, toDate, setExportError, setExporting)}
+              title="All four standard tables, zipped, for the selected period"
+            >
+              <Download size={13} /> {exporting ? "Exporting…" : "Download full bundle (.zip)"}
+            </button>
+          </div>
+          {exportError && <span className="rpt-error" style={{ padding: 0 }}>{exportError}</span>}
+        </div>
+      )}
 
       {report && !loading && (
         <>

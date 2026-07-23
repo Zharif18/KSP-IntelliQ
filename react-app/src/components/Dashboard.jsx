@@ -36,6 +36,7 @@ const RANK_LEVEL = {
   "Inspector": 5,
   "Deputy Superintendent": 6,
   "Superintendent of Police": 7,
+  "SCRB Analyst": 6, // matches SCRB_ROLE_SEED.level in main.py — see below
 };
 
 const ALL_TABS = [
@@ -49,8 +50,13 @@ const ALL_TABS = [
   { icon: Scale, label: "Bias Audit" },
 ];
 
-function tabsForRole(accessRole) {
+// officer: the object get_current_officer returns (accessRole,
+// isSCRBAnalyst, etc.) — takes the whole object rather than just
+// accessRole so the SCRB-specific carve-out below can key off the
+// real isSCRBAnalyst flag instead of string-matching a role name.
+function tabsForRole(officer) {
   const hidden = new Set();
+  const accessRole = officer?.accessRole;
   const level = RANK_LEVEL[accessRole] || 0; // "Unassigned" / unknown -> 0, most restrictive
 
   // Audit Log: Superintendent of Police only (level 7), mirroring
@@ -63,6 +69,18 @@ function tabsForRole(accessRole) {
   // of Police only, so the tab never dangles for a rank the API would
   // just 403 on.
   if (level < 7) hidden.add("Bias Audit");
+
+  // SCRB Analyst: a statewide read-only statistics tier, not a
+  // case-working one (see SCRB_ROLE_SEED / is_scrb_analyst in
+  // main.py — add_case/update_case_status already 403 for this role
+  // server-side, so hiding these tabs keeps the UI from dangling one
+  // that would just error). Dashboard/Crime Map/Reports stay — those
+  // are exactly the statewide aggregate + NCRB-export views SCRB needs.
+  if (officer?.isSCRBAnalyst) {
+    hidden.add("Cases");     // FIR registration/amendment — not an SCRB function
+    hidden.add("Network");   // per-person investigation tool, needs PII SCRB never gets
+    hidden.add("Officers");  // station roster/HR view, not statistical reporting
+  }
 
   return ALL_TABS.filter((t) => !hidden.has(t.label));
 }
@@ -504,7 +522,7 @@ export default function KSPIntelliQDashboard() {
           Before the officer profile loads, show the full-privilege set
           briefly rather than flashing a restricted set then expanding it. */}
       <div className="tab-row">
-        {(officer ? tabsForRole(officer.accessRole) : ALL_TABS).map(({ icon: Icon, label }) => (
+        {(officer ? tabsForRole(officer) : ALL_TABS).map(({ icon: Icon, label }) => (
           <div key={label} className={`tab ${activeTab === label ? "active" : ""}`} onClick={() => setActiveTab(label)}>
             <Icon size={13} /> {label}
           </div>
