@@ -2,6 +2,8 @@ import logging
 import os
 import json
 import time
+import csv
+import io
 import hashlib
 import datetime
 from flask import Request, make_response, jsonify # type: ignore
@@ -9,21 +11,73 @@ import zcatalyst_sdk #type: ignore
 
 
 # =======================================================================
-# RBAC — role tiers, decoupled from Rank/Designation on purpose.
+# RBAC — seven tiers, one per Karnataka Police Rank, assigned to each
+# officer through the Role table (Employee.RoleID -> Role.RoleID), same
+# admin-assigned pattern this project always used. RoleID is kept
+# separate from RankID on purpose: an officer's rank and their granted
+# system-access tier are two different facts, and an admin should be
+# able to correct one without the other silently moving. In practice
+# every officer's RoleID will normally point at the Role row matching
+# their real rank, but nothing in the code forces that 1:1.
 #
-# Rank ("Constable" .. "Superintendent of Police") is who someone is in
-# the police hierarchy. Designation ("Station House Officer" ..) is what
-# post they currently hold. Neither models "SCRB Analyst" at all — SCRB
-# staff are often not field officers. So access tier lives in its own
-# Role table, and an admin assigns Employee.RoleID explicitly — same
-# pattern this file already uses for Employee.zuid (see
-# get_current_officer below). This is intentional: RBAC tiers should
-# never silently fall out of a rank/designation string match.
+# RANK_ACCESS below is the reference table for what to put in the Role
+# table (RoleID/RoleName/DataScope/CanViewPII/CanExportNCRB/Level
+# columns) — seed the Role table with these seven rows, then set each
+# Employee's RoleID to the matching row. It doubles as the FALLBACK
+# used automatically for any employee whose RoleID is still blank (or
+# whose Role table row can't be resolved), keyed off their RankID
+# instead — so newly-provisioned officers still get a sane,
+# rank-appropriate access tier before an admin has explicitly assigned
+# one, rather than dropping to DEFAULT_ROLE's bare minimum. See
+# _get_officer_context for exactly how the two are combined.
 #
-# Fail-safe default: any employee with no RoleID set gets the MOST
-# restrictive tier (own cases only, no PII beyond that, no export),
-# never the most permissive. See _get_officer_context.
+#   Rank                         Data scope   Level  PII  NCRB export
+#   ---------------------------  -----------  -----  ---  -----------
+#   Constable                    OWN_CASES      1    Yes  No
+#   Head Constable                OWN_CASES      2    Yes  No
+#   Asst. Sub-Inspector (ASI)     STATION        3    Yes  No
+#   Sub-Inspector (SI)            STATION        4    Yes  No
+#   Inspector                     STATION        5    Yes  Yes
+#   Deputy Superintendent (DySP)  DISTRICT       6    Yes  Yes
+#   Superintendent of Police (SP) DISTRICT       7    Yes  Yes
+#
+# Rationale:
+#   - Constable/Head Constable ("beat" ranks) only ever see cases they
+#     are personally the investigating officer on — OWN_CASES.
+#   - ASI/SI/Inspector are the ranks that actually staff a police
+#     station as Investigating Officer/SHO, so they get STATION scope
+#     over their whole station's caseload, not just their own cases.
+#   - DySP/SP are the district-level oversight ranks (a DySP supervises
+#     a sub-division of stations, an SP the whole district), so both
+#     get DISTRICT scope. Statewide (STATE) scope is intentionally
+#     unassigned to any of the seven ranks below — nobody sees beyond
+#     their own district's data.
+#   - can_view_pii is True for all seven: these are all operational
+#     police ranks, not a read-only analyst tier, so nobody's identity
+#     view is degraded to a masked pseudonym on account of rank alone.
+#     Victim-identity masking in sensitive-crime matters (Sec 74 BNSS /
+#     POCSO) and juvenile masking (Sec 74 JJ Act) are handled entirely
+#     separately in _redact_victim/_redact_accused below and apply to
+#     EVERY rank equally — that protection is about the case, not the
+#     viewer's seniority, and it is never weakened here.
+#   - can_export_ncrb (crime-return sign-off) is reserved for Inspector
+#     and above, mirroring who is actually authorized to certify NCRB
+#     returns in practice.
+#
+# Fail-safe default: an employee with no resolvable RoleID or RankID
+# gets the MOST restrictive tier (own cases only, no export), never the
+# most permissive. See _get_officer_context.
 # =======================================================================
+RANK_ACCESS = {
+    "RNK01": {"role_name": "Constable",                  "data_scope": "OWN_CASES", "level": 1, "can_view_pii": True, "can_export_ncrb": False},
+    "RNK02": {"role_name": "Head Constable",              "data_scope": "OWN_CASES", "level": 2, "can_view_pii": True, "can_export_ncrb": False},
+    "RNK03": {"role_name": "Asst. Sub-Inspector",         "data_scope": "STATION",   "level": 3, "can_view_pii": True, "can_export_ncrb": False},
+    "RNK04": {"role_name": "Sub-Inspector",               "data_scope": "STATION",   "level": 4, "can_view_pii": True, "can_export_ncrb": False},
+    "RNK05": {"role_name": "Inspector",                   "data_scope": "STATION",   "level": 5, "can_view_pii": True, "can_export_ncrb": True},
+    "RNK06": {"role_name": "Deputy Superintendent",       "data_scope": "DISTRICT",  "level": 6, "can_view_pii": True, "can_export_ncrb": True},
+    "RNK07": {"role_name": "Superintendent of Police",    "data_scope": "DISTRICT",  "level": 7, "can_view_pii": True, "can_export_ncrb": True},
+}
+
 DEFAULT_ROLE = {
     "role_id": None,
     "role_name": "Unassigned",
@@ -33,9 +87,27 @@ DEFAULT_ROLE = {
     "level": 0,
 }
 
-# Ordered least -> most privileged, used only for the audit-log route's
-# own access check.
+# Ordered least -> most privileged, used by the audit-log/bias-audit
+# routes' own access checks. STATE is kept for forward-compatibility
+# (e.g. a future SCRB/state-HQ tier) even though none of the seven
+# current ranks reach it.
 SCOPE_RANK = {"OWN_CASES": 1, "STATION": 2, "DISTRICT": 3, "STATE": 4}
+
+# Two oversight-sensitive thresholds, expressed as rank LEVEL (see
+# RANK_ACCESS) rather than a scope or a role-name string, so they read
+# the same hierarchy the rest of the RBAC table uses:
+#   - FIR_AMEND_MIN_LEVEL: rewriting FIR content (as opposed to just
+#     viewing a case or updating its status) requires acting as an
+#     Investigating Officer — ASI and above, per Sec 173 BNSS ("officer
+#     in charge of a police station" and those assisting under their
+#     direction). Constable/Head Constable can still register a case
+#     and update its status, just not amend its substantive content.
+#   - OVERSIGHT_MIN_LEVEL: the audit trail and the bias-audit view are
+#     themselves privileged views ABOUT policing activity, not case
+#     data — restricted to Superintendent of Police, the senior-most of
+#     the seven ranks and the district's single point of oversight.
+FIR_AMEND_MIN_LEVEL = 3
+OVERSIGHT_MIN_LEVEL = 7
 
 
 def handler(request: Request):
@@ -81,6 +153,7 @@ def handler(request: Request):
             ("/get_investigation_brief", "GET"): get_investigation_brief,
             ("/get_officers", "GET"): get_officers,
             ("/get_reports", "GET"): get_reports,
+            ("/get_ncrb_report", "GET"): get_ncrb_report,
             ("/ai_assistant", "POST"): ai_assistant,
             ("/get_audit_log", "GET"): get_audit_log,
             ("/get_hotspots", "GET"): get_hotspots,
@@ -222,10 +295,22 @@ def _get_officer_context(app):
     except Exception:
         ctx["district_id"] = emp.get("DistrictID")
 
-    # Role lookup — tolerant of the Role table or RoleID column not
-    # existing yet (e.g. mid-migration), so this never hard-fails the
-    # whole app. Falls back to the restrictive default instead.
+    # RBAC lookup — Role table (Employee.RoleID -> Role.RoleID) is the
+    # PRIMARY source of truth, same admin-assigned pattern as before:
+    # RoleID is deliberately a separate field from RankID so access tier
+    # can be granted/revoked per officer without touching their rank.
+    # Populate the Role table with the seven rows in RANK_ACCESS below
+    # (RoleID/RoleName/DataScope/CanViewPII/CanExportNCRB/Level columns)
+    # and set each Employee's RoleID to the matching row.
+    #
+    # Falls back to RANK_ACCESS[RankID] ONLY when RoleID is blank or
+    # doesn't resolve (e.g. an officer not yet assigned a Role row, or
+    # the Role table itself not reachable) — so the system still fails
+    # to a sane, rank-appropriate default rather than DEFAULT_ROLE's
+    # bare minimum for every unassigned employee, while still letting
+    # the Role table override that default whenever one is set.
     role_id = emp.get("RoleID")
+    resolved = False
     if role_id:
         try:
             role_rows = zcql_rows(app, "Role", f"SELECT * FROM Role WHERE RoleID = '{role_id}'")
@@ -239,8 +324,16 @@ def _get_officer_context(app):
                     "can_export_ncrb": bool(int(r.get("CanExportNCRB", 0))),
                     "level": int(r.get("Level", 0)),
                 })
+                resolved = True
         except Exception:
-            pass  # keep DEFAULT_ROLE values already in ctx
+            pass  # Role table not reachable — fall through to RankID below
+
+    if not resolved:
+        rank_id = emp.get("RankID")
+        access = RANK_ACCESS.get(rank_id)
+        if access:
+            ctx.update({"role_id": rank_id, **access})
+        # else: keep DEFAULT_ROLE values already in ctx (fail closed)
 
     return ctx
 
@@ -267,10 +360,13 @@ def get_current_officer(app, request, officer, audit):
     officer_out = {
         "employee_id": emp["EmployeeID"],
         "name": emp["FirstName"],
-        "role": rank[0]["RankName"] if rank else "Officer",   # police Rank — unchanged, for the ID badge
+        "role": rank[0]["RankName"] if rank else "Officer",   # police Rank, for the ID badge
         "station": unit[0]["UnitName"] if unit else "Unassigned",
         "badge": emp["KGID"],
-        # New RBAC fields the frontend uses for tab/feature gating:
+        # RBAC fields the frontend uses for tab/feature gating. accessRole
+        # is now always the same value as `role` above (RANK_ACCESS keys
+        # off the same RankID), kept as its own field since the frontend
+        # already treats it as the RBAC-specific one — see Dashboard.jsx.
         "accessRole": officer["role_name"],
         "dataScope": officer["data_scope"],
         "canViewPII": officer["can_view_pii"],
@@ -339,7 +435,8 @@ def _mask_person_label(person_key, reason):
 #
 # _redact_accused: unchanged rule already used by the network graph —
 #   juvenile -> always masked (Sec 74 JJ Act); otherwise masked only if
-#   officer.can_view_pii is False (SCRB Analyst today).
+#   officer.can_view_pii is False (none of the seven ranks today, but
+#   kept as a real check for any future read-only/analyst tier).
 #
 # _redact_victim: same juvenile/PII rules, PLUS a victim-privacy rule
 #   that doesn't apply to accused: in a sensitive-crime case (proxy for
@@ -397,9 +494,9 @@ def _case_scope_clause(app, officer):
         in_clause = ", ".join(f"'{u}'" for u in unit_ids)
         return f"PoliceStationID IN ({in_clause})"
     if scope == "STATE":
-        return ""  # SCRB Analyst — statewide, but see _reports/_dashboard_stats
-                    # for the fact that STATE scope + can_view_pii=False means
-                    # aggregates only, never raw case rows with names attached.
+        return ""  # No rank among the current seven reaches STATE scope —
+                    # kept for forward-compatibility with a future
+                    # statewide tier, which would see everything.
     return "1=0"
 
 
@@ -416,8 +513,8 @@ def _require_scope_at_least(officer, min_scope):
 #
 # Returns (in_scope: bool, is_direct_holder: bool). is_direct_holder is
 # True only for OWN_CASES/STATION scope — i.e. the caller is the
-# investigating officer or shares that officer's station. DISTRICT/STATE
-# scope (SP, SCRB Analyst) can be in_scope=True for oversight purposes
+# investigating officer or shares that officer's station. DISTRICT
+# scope (DySP, SP) can be in_scope=True for oversight purposes
 # without being a direct holder — used by _redact_victim to keep
 # victim-privacy masking in place for oversight roles even though they
 # can otherwise see the case.
@@ -530,16 +627,18 @@ def search_case(app, request, officer, audit):
 
 # ---------------------------------------------------------------------
 # POST /add_case
-# RBAC: a Constable may only register a case under their own
-# PolicePersonID. SHO/SP may register on behalf of any officer within
-# their station/district. SCRB Analyst never writes case data (STATE +
-# read-only tier) — denied outright.
+# RBAC: a Constable/Head Constable (OWN_CASES scope) may only register
+# a case under their own PolicePersonID — enforced below via the
+# station/self checks already in this route, not a rank denylist. Every
+# one of the seven ranks may register a case, which mirrors real
+# practice: any officer (including a duty constable) can record
+# information under Sec 173 BNSS, with the station's SHO countersigning.
 # ---------------------------------------------------------------------
 def add_case(app, request, officer, audit):
     audit["resource_type"] = "case_create"
 
-    if officer["role_name"] == "SCRB Analyst" or not officer["provisioned"]:
-        return make_response(jsonify({"error": "forbidden", "message": "Your role does not permit registering cases."}), 403)
+    if not officer["provisioned"]:
+        return make_response(jsonify({"error": "forbidden", "message": "This login isn't linked to an officer profile yet."}), 403)
 
     body = request.get_json(force=True)
 
@@ -682,8 +781,6 @@ def update_case_status(app, request, officer, audit):
         return make_response(jsonify({"error": "Case not found"}), 404)
     case = rows[0]
 
-    if officer["role_name"] == "SCRB Analyst":
-        return make_response(jsonify({"error": "forbidden", "message": "Your role does not permit updating cases."}), 403)
     in_scope, _ = _case_in_officer_scope(app, officer, case)
     if not in_scope:
         return make_response(jsonify({"error": "forbidden", "message": "That case is outside your access scope."}), 403)
@@ -699,23 +796,28 @@ def update_case_status(app, request, officer, audit):
 #
 # RBAC: amending FIR content (crime type, narrative, and the
 # complainant/victim/accused rolls) is deliberately a NARROWER
-# permission than viewing a case or updating its status — it's
-# restricted to the direct case holder (OWN_CASES scope where the case
-# is the caller's own, or STATION scope where it's the caller's own
-# station's case). A district SP or the SCRB Analyst can have
-# oversight visibility into a case (_case_in_officer_scope in_scope
-# True) without being allowed to rewrite what's in it — that mirrors
-# how a real investigating officer/station amends an FIR while a
-# reviewing SP does not. Reassigning a case to a different station or
-# officer is a transfer workflow, not an edit, so police_station_id /
-# police_person_id are intentionally NOT editable here.
+# permission than viewing a case or updating its status. Two things
+# both have to be true:
+#   1. Direct case holder (OWN_CASES scope where the case is the
+#      caller's own, or STATION scope where it's the caller's own
+#      station's case) — a DySP/SP with district oversight visibility
+#      (_case_in_officer_scope in_scope True) can see the case but not
+#      rewrite it, same as a real reviewing officer above station level.
+#   2. Rank level >= FIR_AMEND_MIN_LEVEL (Asst. Sub-Inspector and
+#      above) — a Constable/Head Constable can register a case and
+#      update its status, but substantively amending FIR content is an
+#      Investigating Officer function under Sec 173 BNSS, which starts
+#      at ASI.
+# Reassigning a case to a different station or officer is a transfer
+# workflow, not an edit, so police_station_id / police_person_id are
+# intentionally NOT editable here.
 # ---------------------------------------------------------------------
 def _case_edit_permission(app, officer, case_row):
     in_scope, is_direct_holder = _case_in_officer_scope(app, officer, case_row)
     if not in_scope:
         return False, make_response(jsonify({"error": "forbidden", "message": "That case is outside your access scope."}), 403)
-    if not is_direct_holder or officer["role_name"] == "SCRB Analyst":
-        return False, make_response(jsonify({"error": "forbidden", "message": "Only the investigating officer or station may amend this FIR."}), 403)
+    if not is_direct_holder or officer["level"] < FIR_AMEND_MIN_LEVEL:
+        return False, make_response(jsonify({"error": "forbidden", "message": "Only the investigating officer or station (Asst. Sub-Inspector and above) may amend this FIR."}), 403)
     return True, None
 
 
@@ -977,10 +1079,10 @@ def get_case_detail(app, request, officer, audit):
     audit["record_count"] = len(accused_out) + len(victim_out) + len(complainant_out)
 
     # Same "direct holder" concept _redact_victim already uses for
-    # victim-privacy masking — an SP overseeing a district or an SCRB
-    # Analyst can see this case, but only the investigating officer or
-    # their own station may amend it.
-    editable = viewer_has_case_access and officer["role_name"] != "SCRB Analyst"
+    # victim-privacy masking — a DySP/SP overseeing a district can see
+    # this case, but only the investigating officer/station AND rank
+    # ASI-and-above may amend it (see _case_edit_permission).
+    editable = viewer_has_case_access and officer["level"] >= FIR_AMEND_MIN_LEVEL
 
     return make_response(jsonify({
         "case": {
@@ -1146,7 +1248,8 @@ def get_linked_fir_matches(app, request, officer, audit):
 #     their label masked unconditionally (Sec 74 JJ Act). This does not
 #     depend on role — even an SP sees "[JUVENILE-a1b2c3]", not a name.
 #   - Everyone else is masked unless officer.can_view_pii is True
-#     (false only for SCRB Analyst today).
+#     (True for all seven ranks today; kept as a real check for any
+#     future read-only/analyst tier).
 # The district_id filter still limits who counts as the graph's focus
 # set, same as before; RBAC further restricts it to the officer's own
 # scope (a STATION-scope SHO cannot pass district_id=<other district>
@@ -1177,12 +1280,12 @@ def _network_graph(app, officer, district_id="", min_cases=1, limit_persons=120)
     subhead_name = {s["CrimeSubHeadID"]: s["CrimeHeadName"]
                      for s in zcql_rows(app, "CrimeSubHead", "SELECT CrimeSubHeadID, CrimeHeadName FROM CrimeSubHead")}
 
-    # Investigating-officer names are personnel data — the same category
-    # /get_officers already blocks for the SCRB Analyst role ("Personnel
-    # rosters are not part of your role's data scope"). That role can see
-    # the case-linkage graph but shouldn't get officer names just because
-    # this is a different screen, so the same check is repeated here.
-    show_investigators = officer["role_name"] != "SCRB Analyst"
+    # Investigating-officer names are personnel data, gated the same way
+    # as everywhere else in this file: officer["can_view_pii"]. All seven
+    # ranks are operational police ranks, so this is always True today —
+    # kept as a real check (not hardcoded) so a future read-only/analyst
+    # tier can still suppress it without touching this route.
+    show_investigators = officer["can_view_pii"]
     officer_name = {}
     if show_investigators:
         emp_rows = zcql_rows(app, "Employee", "SELECT EmployeeID, FirstName FROM Employee")
@@ -1295,9 +1398,10 @@ def get_network_graph(app, request, officer, audit):
 #   - juvenile -> label always masked (Sec 74 JJ Act), but the
 #     incident trail/MO pattern is still shown to the investigating
 #     side — the Act protects identity, not case-linkage visibility.
-#   - officer.can_view_pii == False (SCRB Analyst) -> label masked AND
-#     the case-by-case incident list is suppressed entirely; the
-#     analyst still gets the aggregate MO pattern, never the trail.
+#   - officer.can_view_pii == False (no rank today, reserved for a
+#     future read-only/analyst tier) -> label masked AND the
+#     case-by-case incident list is suppressed entirely; that tier
+#     would still get the aggregate MO pattern, never the trail.
 # ---------------------------------------------------------------------
 TIME_BANDS = [
     (0, 6, "Late Night (12–6am)"),
@@ -1447,10 +1551,11 @@ def get_person_profile(app, request, officer, audit):
 # in an interrogation room.
 #
 # RBAC: reuses _person_profile's own scope clause and its
-# detailSuppressed gate. An officer whose role loses the incident-level
-# trail (SCRB Analyst, can_view_pii == False) loses the associate
-# network and narrative excerpts here too, for the same reason —
-# aggregate MO pattern only, never a case-by-case or identity trail.
+# detailSuppressed gate. An officer whose rank loses the incident-level
+# trail (can_view_pii == False — no rank today, reserved for a future
+# tier) loses the associate network and narrative excerpts here too,
+# for the same reason — aggregate MO pattern only, never a case-by-case
+# or identity trail.
 # ---------------------------------------------------------------------
 def _investigation_brief(app, officer, person_key):
     from collections import Counter
@@ -1573,9 +1678,8 @@ def get_investigation_brief(app, request, officer, audit):
 # ---------------------------------------------------------------------
 # GET /get_officers?unit_id=&district_id=
 # RBAC: rosters are operational (not personal-privacy) data, but "need
-# to know" still applies — a Constable/SHO only needs their own
-# station's roster, an SP their district's. SCRB Analyst (STATE scope,
-# no operational need for a personnel roster) is denied.
+# to know" still applies via the usual scope clause — a Constable/ASI/SI
+# only sees their own station's roster, a DySP/SP their district's.
 # ---------------------------------------------------------------------
 def _officers(app, officer, unit_id="", district_id=""):
     units = zcql_rows(app, "Unit", "SELECT UnitID, UnitName, DistrictID FROM Unit WHERE Active = 1")
@@ -1637,9 +1741,6 @@ def _officers(app, officer, unit_id="", district_id=""):
 
 def get_officers(app, request, officer, audit):
     audit["resource_type"] = "officer_roster"
-    if officer["role_name"] == "SCRB Analyst":
-        return make_response(jsonify({"error": "forbidden", "message": "Personnel rosters are not part of your role's data scope."}), 403)
-
     unit_id = (request.args.get("unit_id") or "").strip()
     district_id = (request.args.get("district_id") or "").strip()
     officers = _officers(app, officer, unit_id, district_id)
@@ -1650,8 +1751,8 @@ def get_officers(app, request, officer, audit):
 # ---------------------------------------------------------------------
 # GET /get_reports
 # RBAC: aggregate counts only (no names), scoped the same way the
-# dashboard is. SCRB Analyst gets the full statewide breakdown here —
-# this IS their job — but never a name-bearing row.
+# dashboard is — a DySP/SP gets their whole district's breakdown, never
+# a name-bearing row.
 # ---------------------------------------------------------------------
 def _reports(app, officer):
     scope_clause = _case_scope_clause(app, officer)
@@ -1697,13 +1798,145 @@ def get_reports(app, request, officer, audit):
 
 
 # ---------------------------------------------------------------------
+# GET /get_ncrb_report?from=YYYY-MM-DD&to=YYYY-MM-DD&format=json|csv
+#
+# NCRB (National Crime Records Bureau) crime-return export. Unlike
+# get_reports (ad-hoc dashboard aggregates), this groups registered
+# cases by the classification NCRB actually files against — CrimeHead
+# -> CrimeSubHead -> District, broken out by GravityOffence and
+# CaseStatus for the requested period.
+#
+# RBAC: gated by officer["can_export_ncrb"], which RANK_ACCESS already
+# sets True for Inspector and above (see the table at the top of this
+# file) — this route is what finally makes that flag do something.
+# Below Inspector: 403, same pattern as get_audit_log/get_bias_audit.
+#
+# Scope: reuses _case_scope_clause exactly like every other route — an
+# Inspector's export is STATION-scoped, a DySP/SP's is DISTRICT-scoped.
+# Nobody exports outside the case data they could otherwise see; this
+# route only adds NCRB-shaped grouping on top of the same boundary.
+# ---------------------------------------------------------------------
+def _build_ncrb_rows(cases, lookups, gravity_lookup):
+    head_name = {h["CrimeHeadID"]: h["CrimeGroupName"] for h in lookups["crime_heads"]}
+    subhead_name = {s["CrimeSubHeadID"]: s["CrimeHeadName"] for s in lookups["crime_subheads"]}
+    unit_district = {u["UnitID"]: u["DistrictID"] for u in lookups["units"]}
+    district_name = {d["DistrictID"]: d["DistrictName"] for d in lookups["districts"]}
+    status_name = {s["CaseStatusID"]: s["CaseStatusName"] for s in lookups["statuses"]}
+
+    groups = {}
+    for c in cases:
+        district = district_name.get(unit_district.get(c.get("PoliceStationID")), "Unassigned")
+        crime_head = head_name.get(c.get("CrimeMajorHeadID"), "Unclassified")
+        crime_subhead = subhead_name.get(c.get("CrimeMinorHeadID"), "Unclassified")
+        gravity = gravity_lookup.get(c.get("GravityOffenceID"), "Not recorded")
+        status = status_name.get(c.get("CaseStatusID"), "Unknown")
+
+        key = (district, crime_head, crime_subhead, gravity)
+        row = groups.setdefault(key, {
+            "district": district,
+            "crimeHead": crime_head,
+            "crimeSubHead": crime_subhead,
+            "gravity": gravity,
+            "registered": 0,
+            "underInvestigation": 0,
+            "chargeSheeted": 0,
+            "closed": 0,
+        })
+        row["registered"] += 1
+        if status == "Under Investigation":
+            row["underInvestigation"] += 1
+        elif status == "Charge Sheeted":
+            row["chargeSheeted"] += 1
+        elif status == "Closed":
+            row["closed"] += 1
+
+    rows = list(groups.values())
+    rows.sort(key=lambda r: (r["district"], r["crimeHead"], r["crimeSubHead"]))
+    return rows
+
+
+NCRB_CSV_COLUMNS = [
+    ("district", "District"),
+    ("crimeHead", "Crime Head"),
+    ("crimeSubHead", "Crime Sub-Head"),
+    ("gravity", "Gravity"),
+    ("registered", "Cases Registered"),
+    ("underInvestigation", "Under Investigation"),
+    ("chargeSheeted", "Charge Sheeted"),
+    ("closed", "Closed"),
+]
+
+
+def _ncrb_rows_to_csv(rows, period_from, period_to, officer):
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow([f"NCRB Crime Return — period {period_from or 'ALL'} to {period_to or 'ALL'}"])
+    writer.writerow([f"Generated by EmployeeID {officer['employee_id']} — scope {officer['data_scope']}"])
+    writer.writerow([])
+    writer.writerow([label for _, label in NCRB_CSV_COLUMNS])
+    for r in rows:
+        writer.writerow([r[key] for key, _ in NCRB_CSV_COLUMNS])
+    return buf.getvalue()
+
+
+def get_ncrb_report(app, request, officer, audit):
+    audit["resource_type"] = "ncrb_report"
+
+    if not officer["can_export_ncrb"]:
+        return make_response(jsonify({
+            "error": "forbidden",
+            "message": "NCRB export requires Inspector rank or above.",
+        }), 403)
+
+    period_from = (request.args.get("from") or "").strip()
+    period_to = (request.args.get("to") or "").strip()
+    out_format = (request.args.get("format") or "json").strip().lower()
+
+    scope_clause = _case_scope_clause(app, officer)
+    conditions = [scope_clause] if scope_clause else []
+    if period_from:
+        conditions.append(f"CrimeRegisteredDate >= '{period_from}'")
+    if period_to:
+        conditions.append(f"CrimeRegisteredDate <= '{period_to}'")
+    where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+
+    cases = zcql_rows_paginated(app, "CaseMaster",
+        "SELECT CaseMasterID, CrimeRegisteredDate, PoliceStationID, GravityOffenceID, "
+        f"CrimeMajorHeadID, CrimeMinorHeadID, CaseStatusID FROM CaseMaster{where}")
+
+    lookups = _lookups(app)
+    gravity_rows = zcql_rows(app, "GravityOffence", "SELECT GravityOffenceID, LookupValue FROM GravityOffence")
+    gravity_lookup = {g["GravityOffenceID"]: g["LookupValue"] for g in gravity_rows}
+
+    rows = _build_ncrb_rows(cases, lookups, gravity_lookup)
+    audit["record_count"] = len(cases)
+    audit["resource_id"] = f"{period_from or 'ALL'}:{period_to or 'ALL'}"
+
+    if out_format == "csv":
+        csv_text = _ncrb_rows_to_csv(rows, period_from, period_to, officer)
+        resp = make_response(csv_text, 200)
+        resp.headers["Content-Type"] = "text/csv"
+        fname = f"ncrb_report_{period_from or 'all'}_{period_to or 'all'}.csv"
+        resp.headers["Content-Disposition"] = f"attachment; filename=\"{fname}\""
+        return resp
+
+    return make_response(jsonify({
+        "period": {"from": period_from or None, "to": period_to or None},
+        "generatedBy": officer["employee_id"],
+        "scope": officer["data_scope"],
+        "totalCasesRegistered": len(cases),
+        "rows": rows,
+    }), 200)
+
+
+# ---------------------------------------------------------------------
 # GET /get_hotspots?limit=&window_days=
 #
 # Replaces the frontend's old MOCK_HOTSPOTS. Aggregates CaseMaster rows
 # from the last `window_days` (default 30) into per-station counts,
-# using the SAME scope clause as the dashboard stats — a Constable only
-# ever sees their own cases bucketed, a Station officer their station,
-# an SP their district, SCRB Analyst statewide. Nobody sees a station
+# using the SAME scope clause as the dashboard stats — a Constable/Head
+# Constable only ever sees their own cases bucketed, an ASI/SI/Inspector
+# their station, a DySP/SP their district. Nobody sees a station
 # outside their own access just because it's "just a forecast panel".
 #
 # "risk" is a simple relative measure: each station's count as a
@@ -1987,10 +2220,11 @@ def get_crime_trend(app, request, officer, audit):
 # is reported but never marked "elevated" — a skewed ratio from 3
 # cases is noise, not a finding.
 #
-# RBAC: same gate as the Audit Log — DISTRICT scope (SP) or above, since
-# this is an oversight view of patterns across cases, not a single-case
-# read. Uses the same _case_scope_clause as every other route, so an SP
-# only audits their own district; SCRB Analyst (STATE) audits statewide.
+# RBAC: same gate as the Audit Log — Superintendent of Police only
+# (level >= OVERSIGHT_MIN_LEVEL), since this is an oversight view of
+# patterns across cases, not a single-case read. Still uses the same
+# _case_scope_clause as every other route underneath, so an SP only
+# ever audits their own district, never statewide.
 # ---------------------------------------------------------------------
 MIN_SAMPLE = 5
 
@@ -2096,8 +2330,8 @@ def _bias_audit(app, officer):
 
 def get_bias_audit(app, request, officer, audit):
     audit["resource_type"] = "bias_audit"
-    if not _require_scope_at_least(officer, "DISTRICT"):
-        return make_response(jsonify({"error": "forbidden", "message": "Bias audit access requires SP level or above."}), 403)
+    if officer["level"] < OVERSIGHT_MIN_LEVEL:
+        return make_response(jsonify({"error": "forbidden", "message": "Bias audit access requires Superintendent of Police level."}), 403)
     result = _bias_audit(app, officer)
     audit["record_count"] = result["totals"]["cases"]
     return make_response(jsonify(result), 200)
@@ -2105,16 +2339,16 @@ def get_bias_audit(app, request, officer, audit):
 
 # ---------------------------------------------------------------------
 # GET /get_audit_log?limit=
-# Who can see the audit trail is itself an access-control question: an
-# SP can review their own district's activity; an SCRB Analyst can see
-# everything, for statewide oversight. Station-level and below cannot
-# see the audit trail at all — reading who-looked-at-what is itself
-# privileged.
+# Who can see the audit trail is itself an access-control question:
+# only a Superintendent of Police (the senior-most of the seven ranks)
+# can review it, scoped to their own district. Everyone else — Inspector
+# and DySP included — cannot see the audit trail at all; reading
+# who-looked-at-what is itself privileged.
 # ---------------------------------------------------------------------
 def get_audit_log(app, request, officer, audit):
     audit["resource_type"] = "audit_log"
-    if not _require_scope_at_least(officer, "DISTRICT"):
-        return make_response(jsonify({"error": "forbidden", "message": "Audit trail access requires SP level or above."}), 403)
+    if officer["level"] < OVERSIGHT_MIN_LEVEL:
+        return make_response(jsonify({"error": "forbidden", "message": "Audit trail access requires Superintendent of Police level."}), 403)
 
     limit = min(int(request.args.get("limit") or 200), 300)
     conditions = []

@@ -16,16 +16,28 @@ import BiasAudit from "./BiasAudit";
 import catalyst from "../catalystInit.jsx";
 
 /* ---------------------------------------------------------------------
-   RBAC tab visibility — every tab still exists for every role; what
+   RBAC tab visibility — every tab still exists for every rank; what
    changes is which ones a given accessRole is offered, mirroring the
-   backend's own scoping so the UI never dangles a tab that the API
-   would just 403 on anyway.
+   backend's own scoping (main.py RANK_ACCESS) so the UI never dangles
+   a tab that the API would just 403 on anyway.
 
    accessRole values come from get_current_officer's "accessRole" field
-   (Constable / SHO / SP / SCRB Analyst / Unassigned — see main.py).
-   "Unassigned" (no RoleID set yet by an admin) gets the same minimal
-   set a Constable gets: fail-safe, not fail-open.
+   — one of the seven Karnataka Police ranks, in ascending seniority:
+     Constable < Head Constable < Asst. Sub-Inspector < Sub-Inspector <
+     Inspector < Deputy Superintendent < Superintendent of Police
+   ("Unassigned" — no recognized RankID on file — gets the same minimal
+   set a Constable gets: fail-safe, not fail-open.)
 ------------------------------------------------------------------------ */
+const RANK_LEVEL = {
+  "Constable": 1,
+  "Head Constable": 2,
+  "Asst. Sub-Inspector": 3,
+  "Sub-Inspector": 4,
+  "Inspector": 5,
+  "Deputy Superintendent": 6,
+  "Superintendent of Police": 7,
+};
+
 const ALL_TABS = [
   { icon: BarChart3, label: "Dashboard" },
   { icon: Map, label: "Crime Map" },
@@ -39,27 +51,19 @@ const ALL_TABS = [
 
 function tabsForRole(accessRole) {
   const hidden = new Set();
-  if (accessRole === "SCRB Analyst") {
-    // Statewide aggregates + NCRB export live here. No personnel
-    // roster — get_officers 403s this role outright (rosters are
-    // operational, not analytical, data). Crime Map IS shown: it reads
-    // CaseMaster through the same search_case route every role uses,
-    // and CaseMaster has no name/PII columns (just IDs, status,
-    // lat/long) — so a statewide read-only view is exactly this role's
-    // STATE data_scope, not an overreach.
-    hidden.add("Officers");
-  } else {
-    // Field roles (Constable / SHO / SP) don't get the cross-district
-    // Audit Log tab unless the backend itself would let them in —
-    // SP and above (DISTRICT/STATE scope). Keeping this in sync with
-    // get_audit_log's _require_scope_at_least("DISTRICT") check.
-    if (accessRole !== "SP") hidden.add("Audit Log");
-  }
-  // Bias Audit is gated the exact same way as Audit Log server-side
-  // (get_bias_audit also requires DISTRICT scope or above) — SP and
-  // SCRB Analyst only, so the tab never dangles for a role the API
-  // would just 403 on.
-  if (accessRole !== "SP" && accessRole !== "SCRB Analyst") hidden.add("Bias Audit");
+  const level = RANK_LEVEL[accessRole] || 0; // "Unassigned" / unknown -> 0, most restrictive
+
+  // Audit Log: Superintendent of Police only (level 7), mirroring
+  // get_audit_log's OVERSIGHT_MIN_LEVEL check server-side. Reading
+  // who-looked-at-what is itself privileged, so even a DySP doesn't see it.
+  if (level < 7) hidden.add("Audit Log");
+
+  // Bias Audit is gated the exact same way server-side
+  // (get_bias_audit also requires OVERSIGHT_MIN_LEVEL) — Superintendent
+  // of Police only, so the tab never dangles for a rank the API would
+  // just 403 on.
+  if (level < 7) hidden.add("Bias Audit");
+
   return ALL_TABS.filter((t) => !hidden.has(t.label));
 }
 
@@ -518,7 +522,7 @@ export default function KSPIntelliQDashboard() {
         ) : activeTab === "Officers" ? (
           <Officers />
         ) : activeTab === "Reports" ? (
-          <Reports />
+          <Reports officer={officer} />
         ) : activeTab === "Audit Log" ? (
           <AuditLog />
         ) : activeTab === "Bias Audit" ? (

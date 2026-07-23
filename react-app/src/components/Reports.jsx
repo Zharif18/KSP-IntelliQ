@@ -1,21 +1,55 @@
 import { useState, useEffect } from "react";
-import { Search, TrendingUp } from "lucide-react";
+import { Search, TrendingUp, Download } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid
 } from "recharts";
 
 /* ---------------------------------------------------------------------
-   Calls the real backend route:
+   Calls the real backend routes:
      GET /server/ksp_intelli_q_function/get_reports
-   One combined payload — total_cases, solve_rate, and three ranked
-   breakdowns (by_crime_type, by_district, by_status) — all aggregated
-   server-side from live CaseMaster rows in main.py's _reports().
+     GET /server/ksp_intelli_q_function/get_ncrb_report?from=&to=&format=csv
+   get_reports returns one combined payload — total_cases, solve_rate,
+   and three ranked breakdowns — aggregated server-side in _reports().
+   get_ncrb_report is the NCRB crime-return export, gated server-side
+   by officer.canExportNCRB (Inspector rank and above only); this
+   component only shows the button when that flag is true, but the
+   403 the API would return either way is the real boundary.
 ------------------------------------------------------------------------ */
 
 async function fetchJSON(endpoint) {
   const res = await fetch(`/server/ksp_intelli_q_function/${endpoint}`, { credentials: "include" });
   if (!res.ok) throw new Error(`${endpoint} failed (${res.status})`);
   return res.json();
+}
+
+async function downloadNCRBReport(from, to, setExportError, setExporting) {
+  setExporting(true);
+  setExportError(null);
+  try {
+    const params = new URLSearchParams({ format: "csv" });
+    if (from) params.set("from", from);
+    if (to) params.set("to", to);
+    const res = await fetch(`/server/ksp_intelli_q_function/get_ncrb_report?${params}`, {
+      credentials: "include",
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.message || `NCRB export failed (${res.status})`);
+    }
+    const blob = await res.blob();
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `ncrb_report_${from || "all"}_${to || "all"}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    window.URL.revokeObjectURL(url);
+  } catch (err) {
+    setExportError(err.message);
+  } finally {
+    setExporting(false);
+  }
 }
 
 function StatCard({ label, value, tone }) {
@@ -49,10 +83,16 @@ function RankedList({ title, rows }) {
   );
 }
 
-export default function Reports() {
+export default function Reports({ officer }) {
   const [report, setReport] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [fromDate, setFromDate] = useState("");
+  const [toDate, setToDate] = useState("");
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState(null);
+
+  const canExportNCRB = !!officer?.canExportNCRB;
 
   const load = () => {
     setLoading(true);
@@ -98,6 +138,15 @@ export default function Reports() {
         .rpt-row-count { width: 30px; text-align: right; font-weight: 600; }
         .rpt-empty { text-align: center; padding: 40px; color: var(--muted); font-size: 13px; }
         .rpt-error { text-align: center; padding: 16px; color: var(--wine); font-size: 12.5px; }
+        .ncrb-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+          margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); }
+        .ncrb-label { font-size: 11.5px; color: var(--muted); font-weight: 600; margin-right: 4px; }
+        .ncrb-date { background: var(--panel-raised); border: 1px solid var(--border); border-radius: 8px;
+          padding: 7px 10px; font-size: 12px; color: var(--text); outline: none; }
+        .ncrb-btn { display: flex; align-items: center; gap: 6px; padding: 8px 16px; border-radius: 8px;
+          font-size: 12.5px; font-weight: 600; cursor: pointer; background: var(--gold); color: #1a1a1a;
+          border: none; }
+        .ncrb-btn:disabled { opacity: 0.6; cursor: not-allowed; }
         @media (max-width: 900px) { .rpt-grid { grid-template-columns: 1fr; } }
       `}</style>
 
@@ -119,6 +168,25 @@ export default function Reports() {
             <StatCard label="Solve Rate" value={`${report.solve_rate}%`} tone="sage" />
             <StatCard label="Crime Categories" value={report.by_crime_type.length} />
             <StatCard label="Districts Reporting" value={report.by_district.length} />
+          </div>
+        )}
+
+        {canExportNCRB && (
+          <div className="ncrb-row">
+            <span className="ncrb-label">NCRB Export</span>
+            <input type="date" className="ncrb-date" value={fromDate}
+              onChange={(e) => setFromDate(e.target.value)} />
+            <span style={{ color: "var(--muted)", fontSize: 12 }}>to</span>
+            <input type="date" className="ncrb-date" value={toDate}
+              onChange={(e) => setToDate(e.target.value)} />
+            <button
+              className="ncrb-btn"
+              disabled={exporting}
+              onClick={() => downloadNCRBReport(fromDate, toDate, setExportError, setExporting)}
+            >
+              <Download size={13} /> {exporting ? "Exporting…" : "Export CSV"}
+            </button>
+            {exportError && <span className="rpt-error" style={{ padding: 0 }}>{exportError}</span>}
           </div>
         )}
       </div>

@@ -5,13 +5,13 @@ import { ShieldAlert, RefreshCw } from "lucide-react";
    Calls the real backend route:
      GET /server/ksp_intelli_q_function/get_audit_log?limit=
 
-   Access itself is gated server-side (SP sees their own district's
-   entries, SCRB Analyst sees statewide, everyone else gets a 403) —
-   this component doesn't duplicate that logic, it just renders
-   whatever the backend is willing to return, and shows the 403
-   message plainly if the signed-in officer shouldn't be here (e.g.
-   they reached this tab via a stale bookmark rather than the nav,
-   since the nav itself already hides this tab for other roles).
+   Access itself is gated server-side (Superintendent of Police sees
+   their own district's entries, every other rank gets a 403) — this
+   component doesn't duplicate that logic, it just renders whatever the
+   backend is willing to return, and shows the 403 message plainly if
+   the signed-in officer shouldn't be here (e.g. they reached this tab
+   via a stale bookmark rather than the nav, since the nav itself
+   already hides this tab for every rank below Superintendent of Police).
 ------------------------------------------------------------------------ */
 
 async function fetchJSON(endpoint) {

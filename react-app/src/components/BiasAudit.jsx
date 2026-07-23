@@ -9,9 +9,9 @@ import { Scale, RefreshCw, AlertTriangle, Info } from "lucide-react";
    offender flag (the closest thing here to a predictive-policing risk
    signal, used by Network Graph / hotspots / investigation briefs) for
    geographic and demographic disparity. Access is gated server-side
-   (SP sees their own district, SCRB Analyst sees statewide, everyone
-   else gets a 403) — this component just renders whatever the backend
-   is willing to return, same pattern as AuditLog.jsx.
+   (Superintendent of Police sees their own district, every other rank
+   gets a 403) — this component just renders whatever the backend is
+   willing to return, same pattern as AuditLog.jsx.
 ------------------------------------------------------------------------ */
 
 async function fetchJSON(endpoint) {
